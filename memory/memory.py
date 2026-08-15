@@ -1,29 +1,29 @@
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+import uuid
 
 
 @dataclass
 class Memory:
-    event: str
-    emotion: str
-    importance: int
-    created: datetime
-    recalls: int = 0
+    id: str = field(default_factory=lambda: str(uuid.uuid4()))
 
-    def remember(self):
-        self.recalls += 1
+    event: str = ""
+    emotion: str = ""
+    importance: int = 0
+    created: datetime = field(default_factory=datetime.now)
+    category: str = ""
 
-        if self.importance < 100:
-            self.importance += 1
+    tags: list[str] = field(default_factory=list)
+    reflection: str | None = None
+    connections: list[str] = field(default_factory=list)
 
-    def is_core(self):
-        return self.importance >= 80
+    times_recalled: int = 0
 
-    def describe(self):
-        print("----- Memory -----")
-        print(f"Event: {self.event}")
-        print(f"Emotion: {self.emotion}")
-        print(f"Importance: {self.importance}")
-        print(f"Times Recalled: {self.recalls}")
-        print(f"Core Memory: {self.is_core()}")
-        
+    def recall(self):
+        self.times_recalled += 1
+
+    def reflect(self, thought: str):
+        self.reflection = thought
+
+    def connect(self, other_memory):
+        self.connections.append(other_memory.id)
