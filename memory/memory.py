@@ -1,29 +1,51 @@
-from dataclasses import dataclass, field
-from datetime import datetime
-import uuid
+from memory.models import Memory
 
 
-@dataclass
-class Memory:
-    id: str = field(default_factory=lambda: str(uuid.uuid4()))
+class MemoryStore:
 
-    event: str = ""
-    emotion: str = ""
-    importance: int = 0
-    created: datetime = field(default_factory=datetime.now)
-    category: str = ""
+    def __init__(self):
+        self.memories = []
 
-    tags: list[str] = field(default_factory=list)
-    reflection: str | None = None
-    connections: list[str] = field(default_factory=list)
+    def create(
+        self,
+        event,
+        emotion="neutral",
+        importance=1,
+        category="general",
+        tags=None,
+    ):
 
-    times_recalled: int = 0
+        if tags is None:
+            tags = []
 
-    def recall(self):
-        self.times_recalled += 1
+        memory = Memory(
+            event=event,
+            emotion=emotion,
+            importance=importance,
+            category=category,
+            tags=tags,
+        )
 
-    def reflect(self, thought: str):
-        self.reflection = thought
+        self.memories.append(memory)
 
-    def connect(self, other_memory):
-        self.connections.append(other_memory.id)
+        return memory
+
+    def recall(self, query):
+
+        query = query.lower()
+
+        results = []
+
+        for memory in self.memories:
+
+            if query in memory.event.lower():
+                memory.recalled += 1
+                results.append(memory)
+
+        return results
+
+    def all(self):
+        return self.memories
+
+    def count(self):
+        return len(self.memories)

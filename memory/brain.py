@@ -1,35 +1,55 @@
-from datetime import datetime
-
-from memory.memory import Memory
+from memory.memory import MemoryStore
+from conversation.history import ConversationHistory
+from core.prompt_builder import PromptBuilder
+from core.llm import LLM
 
 
 class Brain:
-    def __init__(self):
-        self.memories = []
 
-    def remember(
-        self,
-        event,
-        emotion="neutral",
-        importance=1,
-        category="general",
-        tags=None,
-    ):
-        memory = Memory(
-            event=event,
-            emotion=emotion,
-            importance=importance,
-            created=datetime.now(),
-            category=category,
-            tags=tags or [],
+    def __init__(self):
+        self.memory = MemoryStore()
+        self.history = ConversationHistory()
+        self.prompt_builder = PromptBuilder()
+        self.llm = LLM()
+        self.personality = (
+            "You are Genesis. "
+            "You are thoughtful, curious, helpful, and remember previous conversations."
         )
 
-        self.memories.append(memory)
+    def process(self, speaker, message):
 
-        return memory
+        # Add the user's message to the conversation history
+        self.history.add(speaker, message)
 
-    def recall_all(self):
-        return self.memories
+        # Recall relevant memories
+        related_memories = self.memory.recall(message)
 
-    def count(self):
-        return len(self.memories)
+        # Build the prompt
+        prompt = self.prompt_builder.build(
+            personality=self.personality,
+            memories=related_memories,
+            conversation=self.history.recent(),
+            user_message=message,
+        )
+
+        # Generate a response (currently a stub)
+        response = self.llm.generate(prompt)
+
+        # Add Genesis's response to the conversation history
+        self.history.add("Genesis", response)
+
+        # Store the user's message as a memory
+        memory = self.memory.create(message)
+
+        # Debug output
+        print("\nNew memory created")
+        print("=" * 35)
+        print(f"Memory ID : {memory.id}")
+        print(f"Event     : {memory.event}")
+        print(f"Emotion   : {memory.emotion}")
+        print(f"Importance: {memory.importance}")
+        print(f"Category  : {memory.category}")
+        print(f"Created   : {memory.created}")
+        print("=" * 35)
+
+        return response
