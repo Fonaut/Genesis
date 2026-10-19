@@ -43,8 +43,10 @@ dist/
 .coverage
 htmlcov/
 
-# Logs
+# Logs & Performance Metrics
 *.log
+*.jsonl
+logs/
 
 # Jupyter
 .ipynb_checkpoints/
