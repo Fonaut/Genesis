@@ -8,15 +8,16 @@ from dotenv import load_dotenv
 load_dotenv()
 client = OpenAI()
 
-SAMPLE_RATE = 44100
+# Configurable parameters (defaults preserve exact baseline behavior)
+SAMPLE_RATE = int(os.getenv("GENESIS_SAMPLE_RATE", "44100"))
 CHANNELS = 1
 INPUT_FILE = "input.wav"
 OUTPUT_FILE = "output.mp3"
 
-# Tuning knobs
-SILENCE_THRESHOLD = 0.015   # how quiet = "silent" (raise if too sensitive)
-SILENCE_DURATION = 1.5      # seconds of silence before stopping
-MAX_DURATION = 30           # hard cutoff (safety net)
+# Tuning knobs (easily configurable and reversible)
+SILENCE_THRESHOLD = float(os.getenv("GENESIS_SILENCE_THRESHOLD", "0.015"))   # how quiet = "silent"
+SILENCE_DURATION = float(os.getenv("GENESIS_SILENCE_DURATION", "1.5"))       # seconds of silence before stopping
+MAX_DURATION = int(os.getenv("GENESIS_MAX_DURATION", "30"))                  # hard cutoff (safety net)
 
 
 def record_audio():

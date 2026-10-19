@@ -39,16 +39,19 @@ class TestCapabilities(unittest.TestCase):
         self.assertIn("local_tools", VERIFIED_CAPABILITIES)
 
     def test_unavailable_hardware_boundaries_explicit(self):
-        """Cameras, biometrics, and room acoustics are explicitly declared unavailable."""
+        """Cameras, biometrics, room acoustics, and vocal emotion sensing are explicitly declared unavailable."""
         unavailable_text = " ".join(UNAVAILABLE_CAPABILITIES).lower()
         self.assertIn("camera", unavailable_text)
         self.assertIn("facial", unavailable_text)
         self.assertIn("biometric", unavailable_text)
         self.assertIn("room", unavailable_text)
+        self.assertIn("vocal emotion", unavailable_text)
 
     def test_capability_prompt_content(self):
-        """Capability prompt contains clear directives for honesty and sensory limits."""
+        """Capability prompt contains clear directives for honesty, sensory limits, and vocal embodiment."""
         prompt = get_capability_prompt()
+        self.assertIn("audible voice", prompt)
+        self.assertIn("NOT a text-only system", prompt)
         self.assertIn("NO cameras", prompt)
         self.assertIn("NO biometric sensors", prompt)
         self.assertIn("room energy", prompt)
