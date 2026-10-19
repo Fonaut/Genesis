@@ -4,8 +4,9 @@ from conversation.history import History
 from memory.brain import Brain
 from identity.identity import Identity
 from core.voice import record_audio, transcribe_audio, speak, synthesize_speech, play_audio
-from core.wake_word import wait_for_wake_word
+from core.wake_word import wait_for_wake_word, parse_wake_word
 from core.metrics import LatencyTracker
+from core.config import SHOW_INTERNAL_THOUGHTS
 
 # Initialize all components
 ai = LLM()
@@ -23,25 +24,31 @@ if not identity.load().get("introduced", False):
     identity.introduced()
 
 while True:
-    # 1. Wait for "Genesis" to be said
-    wait_for_wake_word()
+    # 1. Wait for "Genesis" to be said (supports one-shot commands like "Genesis, what time is it?")
+    command = wait_for_wake_word()
 
-    # 2. Record the actual command
-    audio_file = record_audio()
-    tracker.start_turn()
+    if command:
+        # One-shot command spoken in the same breath
+        user = command
+        tracker.start_turn()
+        tracker.stages["speech_transcription"] = 0.0
+    else:
+        # Two-stage mode: wake word alone was detected, now record the actual command
+        audio_file = record_audio()
+        tracker.start_turn()
 
-    with tracker.measure("speech_transcription"):
-        user = transcribe_audio(audio_file)
+        with tracker.measure("speech_transcription"):
+            user = transcribe_audio(audio_file)
 
-    # Sometimes the user says nothing after waking — handle that
-    if not user.strip():
-        print("🤷 Didn't catch that. Going back to sleep.")
-        continue
+        # If user repeated the wake word at the start of their command, strip only the activation phrase
+        is_wake, trailing = parse_wake_word(user)
+        if is_wake:
+            user = trailing
 
-    # Strip out the wake word itself if Whisper kept it in the transcript
-    cleaned = user.lower().replace("genesis", "").strip(" ,.!?-")
-    if cleaned:
-        user = cleaned
+        # Handle empty user input or saying "Genesis" alone without a query
+        if not user.strip():
+            print("🤷 Didn't catch that. Going back to sleep.")
+            continue
 
     print(f"\nYou: {user}")
     history.add("user", user)
@@ -62,7 +69,9 @@ while True:
     # 3. Reasoning layer
     with tracker.measure("reasoning"):
         thought = ai.think(user, memories, conversation)
-    print(f"\n💭 [internal thought: {thought}]\n")
+
+    if SHOW_INTERNAL_THOUGHTS:
+        print(f"\n💭 [internal thought: {thought}]\n")
 
     prompt = f"""
 {identity.prompt()}
