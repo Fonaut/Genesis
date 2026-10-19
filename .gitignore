@@ -9,9 +9,23 @@ venv/
 env/
 ENV/
 
-# Environment variables
+# Environment variables & secrets
 .env
 .env.*
+*.token
+*_token
+.bridge_token
+
+# Memory, databases, and generated conversation logs
+memory/memories.json
+conversation/history.json
+chroma_db/
+*.db
+*.sqlite*
+
+# Audio recordings / temporary audio files
+*.wav
+*.mp3
 
 # macOS
 .DS_Store

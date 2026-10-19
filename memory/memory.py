@@ -1,51 +1,27 @@
-from memory.models import Memory
+import json
+from pathlib import Path
+
+MEMORY_FILE = Path("memory/memories.json")
 
 
-class MemoryStore:
+class Memory:
+    ...
 
+    def remember(self, fact):
+        self.add(fact)
     def __init__(self):
-        self.memories = []
+        if not MEMORY_FILE.exists():
+            MEMORY_FILE.write_text("[]")
 
-    def create(
-        self,
-        event,
-        emotion="neutral",
-        importance=1,
-        category="general",
-        tags=None,
-    ):
+    def load(self):
+        with open(MEMORY_FILE, "r") as f:
+            return json.load(f)
 
-        if tags is None:
-            tags = []
+    def save(self, memories):
+        with open(MEMORY_FILE, "w") as f:
+            json.dump(memories, f, indent=4)
 
-        memory = Memory(
-            event=event,
-            emotion=emotion,
-            importance=importance,
-            category=category,
-            tags=tags,
-        )
-
-        self.memories.append(memory)
-
-        return memory
-
-    def recall(self, query):
-
-        query = query.lower()
-
-        results = []
-
-        for memory in self.memories:
-
-            if query in memory.event.lower():
-                memory.recalled += 1
-                results.append(memory)
-
-        return results
-
-    def all(self):
-        return self.memories
-
-    def count(self):
-        return len(self.memories)
+    def add(self, text):
+        memories = self.load()
+        memories.append(text)
+        self.save(memories)

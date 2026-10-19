@@ -1,35 +1,22 @@
-class PromptBuilder:
-    def build(
-        self,
-        personality,
-        memories,
-        conversation,
-        user_message,
-    ):
-        prompt = []
+from pathlib import Path
 
-        # Personality
-        prompt.append("=== Personality ===")
-        prompt.append(personality)
+PROMPT_PATH = Path("personality/system_prompt.txt")
 
-        # Memories
-        prompt.append("\n=== Relevant Memories ===")
 
-        if memories:
-            for memory in memories:
-                prompt.append(f"- {memory.event}")
-        else:
-            prompt.append("None")
+def build_prompt(memories, history, user_message):
+    system_prompt = PROMPT_PATH.read_text()
 
-        # Conversation History
-        prompt.append("\n=== Conversation ===")
+    prompt = f"""
+{system_prompt}
 
-        if conversation:
-            for msg in conversation:
-                prompt.append(f"{msg.speaker}: {msg.message}")
+Long-Term Memory:
+{memories}
 
-        # Current User Message
-        prompt.append("\n=== User ===")
-        prompt.append(user_message)
+Recent Conversation:
+{history}
 
-        return "\n".join(prompt)
+Current User Message:
+{user_message}
+"""
+
+    return prompt
