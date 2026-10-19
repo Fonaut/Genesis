@@ -1,13 +1,16 @@
+import os
 import json
 from pathlib import Path
 
 
 class History:
 
-    def __init__(self):
-        self.file = Path("conversation/history.json")
+    def __init__(self, history_file=None):
+        env_hist = os.getenv("GENESIS_HISTORY_FILE")
+        self.file = Path(history_file or env_hist or "conversation/history.json")
 
         if not self.file.exists():
+            self.file.parent.mkdir(parents=True, exist_ok=True)
             self.file.write_text("[]")
 
     def load(self):

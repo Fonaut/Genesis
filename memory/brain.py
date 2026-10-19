@@ -12,14 +12,18 @@ load_dotenv()
 
 
 class Brain:
-    def __init__(self):
-        # 1. JSON fallback path (keep for safety and old queries)
-        self.json_file = Path("memory/memories.json")
+    def __init__(self, json_path=None, chroma_path=None):
+        # 1. JSON fallback path (configurable via argument or environment for isolated testing)
+        env_json = os.getenv("GENESIS_MEMORY_JSON")
+        self.json_file = Path(json_path or env_json or "memory/memories.json")
         if not self.json_file.exists():
+            self.json_file.parent.mkdir(parents=True, exist_ok=True)
             self.json_file.write_text("[]")
 
-        # 2. Initialize ChromaDB persistent client
-        self.chroma_client = chromadb.PersistentClient(path="./chroma_db")
+        # 2. Initialize ChromaDB persistent client (configurable via argument or environment)
+        env_chroma = os.getenv("GENESIS_CHROMA_DB")
+        chroma_dir = chroma_path or env_chroma or "./chroma_db"
+        self.chroma_client = chromadb.PersistentClient(path=chroma_dir)
 
         # 3. Set up OpenAI embedding function
         self.embedding_fn = embedding_functions.OpenAIEmbeddingFunction(

@@ -48,5 +48,9 @@ htmlcov/
 *.jsonl
 logs/
 
+# Isolated test environments
+test_env/
+test_data/
+
 # Jupyter
 .ipynb_checkpoints/
