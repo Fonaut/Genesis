@@ -69,13 +69,24 @@ def transcribe_audio(file_path):
     return transcript.text
 
 
-def speak(text):
-    """Converts text to speech using OpenAI TTS and plays it."""
-    print("🔊 Genesis is speaking...")
+def synthesize_speech(text, output_file=OUTPUT_FILE):
+    """Synthesizes text to speech using OpenAI TTS without playing it."""
     response = client.audio.speech.create(
         model="tts-1",
         voice="alloy",
         input=text
     )
-    response.stream_to_file(OUTPUT_FILE)
-    os.system(f"afplay {OUTPUT_FILE}")
+    response.stream_to_file(output_file)
+    return output_file
+
+
+def play_audio(file_path=OUTPUT_FILE):
+    """Plays an audio file via afplay."""
+    os.system(f"afplay {file_path}")
+
+
+def speak(text):
+    """Converts text to speech using OpenAI TTS and plays it."""
+    print("🔊 Genesis is speaking...")
+    audio_file = synthesize_speech(text)
+    play_audio(audio_file)

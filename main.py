@@ -3,8 +3,9 @@ from core.planner import Planner
 from conversation.history import History
 from memory.brain import Brain
 from identity.identity import Identity
-from core.voice import record_audio, transcribe_audio, speak
+from core.voice import record_audio, transcribe_audio, speak, synthesize_speech, play_audio
 from core.wake_word import wait_for_wake_word
+from core.metrics import LatencyTracker
 
 # Initialize all components
 ai = LLM()
@@ -12,6 +13,7 @@ planner = Planner()
 history = History()
 brain = Brain()
 identity = Identity()
+tracker = LatencyTracker()
 
 # First-time introduction
 if not identity.load().get("introduced", False):
@@ -26,7 +28,10 @@ while True:
 
     # 2. Record the actual command
     audio_file = record_audio()
-    user = transcribe_audio(audio_file)
+    tracker.start_turn()
+
+    with tracker.measure("speech_transcription"):
+        user = transcribe_audio(audio_file)
 
     # Sometimes the user says nothing after waking — handle that
     if not user.strip():
@@ -42,17 +47,21 @@ while True:
     history.add("user", user)
 
     conversation = history.recent()
-    plan = planner.decide(user)
 
-    if plan["search_memory"]:
-        memories = brain.recall(user)
-    else:
-        memories = []
+    with tracker.measure("planner_decision"):
+        plan = planner.decide(user)
+
+    with tracker.measure("memory_recall"):
+        if plan["search_memory"]:
+            memories = brain.recall(user)
+        else:
+            memories = []
 
     memory_text = "\n".join(f"- {memory}" for memory in memories)
 
     # 3. Reasoning layer
-    thought = ai.think(user, memories, conversation)
+    with tracker.measure("reasoning"):
+        thought = ai.think(user, memories, conversation)
     print(f"\n💭 [internal thought: {thought}]\n")
 
     prompt = f"""
@@ -79,16 +88,31 @@ Instructions:
 """
 
     # 4. Response with tool support
-    answer = ai.ask_with_tools(prompt)
+    with tracker.measure("response_generation"):
+        answer = ai.ask_with_tools(prompt)
 
     print(f"\nGenesis: {answer}\n")
-    speak(answer)
+
+    with tracker.measure("speech_synthesis"):
+        output_file = synthesize_speech(answer)
+
+    tracker.mark_playback_start()
+    print("🔊 Genesis is speaking...")
+
+    with tracker.measure("audio_playback"):
+        play_audio(output_file)
 
     history.add("assistant", answer)
 
     # 5. Save long-term memory only when appropriate
-    if plan["save_memory"]:
-        transcript = f"User:\n{user}\n\nGenesis:\n{answer}"
-        memory = ai.extract_memory(transcript)
-        if memory != "NONE":
-            brain.remember(memory)
+    with tracker.measure("memory_extraction"):
+        if plan["save_memory"]:
+            transcript = f"User:\n{user}\n\nGenesis:\n{answer}"
+            memory = ai.extract_memory(transcript)
+            if memory != "NONE":
+                brain.remember(memory)
+
+    tracker.end_turn(flags={
+        "memory_searched": bool(plan["search_memory"]),
+        "memory_saved": bool(plan["save_memory"]),
+    })
