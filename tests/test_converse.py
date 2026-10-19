@@ -105,10 +105,10 @@ class TestConverseInterface(unittest.TestCase):
         mock_brain.remember.assert_not_called()
         mock_ai.extract_memory.assert_not_called()
 
-    def test_memory_preservation_for_fonaut(self):
-        """Verifies that Fonaut's interactions ARE eligible for memory consolidation."""
+    def test_memory_preservation_for_fodoh(self):
+        """Verifies that Fodoh's interactions ARE eligible for memory consolidation."""
         mock_ai = MagicMock()
-        mock_ai.ask_with_tools.return_value = "Genesis reply to Fonaut"
+        mock_ai.ask_with_tools.return_value = "Genesis reply to Fodoh"
         mock_ai.think.return_value = "Private thought"
         mock_ai.extract_memory.return_value = "Enjoys building AI companions"
 
@@ -122,7 +122,7 @@ class TestConverseInterface(unittest.TestCase):
 
         process_turn(
             session=self.session,
-            speaker="Fonaut",
+            speaker="Fodoh",
             message="I enjoy building AI companions.",
             ai=mock_ai,
             planner=mock_planner,
@@ -132,9 +132,38 @@ class TestConverseInterface(unittest.TestCase):
             enable_voice=False,
         )
 
-        # When Fonaut speaks and save_memory=True, brain.remember SHOULD be called
+        # When Fodoh speaks and save_memory=True, brain.remember SHOULD be called
         mock_ai.extract_memory.assert_called_once()
         mock_brain.remember.assert_called_once_with("Enjoys building AI companions")
+
+    def test_memory_preservation_for_fonaut_historical_alias(self):
+        """Verifies that historical 'Fonaut' speaker label also consolidates memory."""
+        mock_ai = MagicMock()
+        mock_ai.ask_with_tools.return_value = "Genesis reply to Fonaut"
+        mock_ai.think.return_value = "Private thought"
+        mock_ai.extract_memory.return_value = "Historical memory"
+
+        mock_planner = MagicMock()
+        mock_planner.decide.return_value = {"search_memory": False, "save_memory": True}
+
+        mock_brain = MagicMock()
+        mock_identity = MagicMock()
+        mock_identity.prompt.return_value = "Identity Prompt"
+        mock_tracker = MagicMock()
+
+        process_turn(
+            session=self.session,
+            speaker="Fonaut",
+            message="Historical turn.",
+            ai=mock_ai,
+            planner=mock_planner,
+            brain=mock_brain,
+            identity=mock_identity,
+            tracker=mock_tracker,
+            enable_voice=False,
+        )
+
+        mock_brain.remember.assert_called_once_with("Historical memory")
 
     def test_fonaut_approval_granted(self):
         """Verifies that typing 'y' or pressing enter approves message sending."""
@@ -158,13 +187,13 @@ class TestConverseInterface(unittest.TestCase):
             self.assertEqual(msg, "Edited message line")
 
     def test_format_genesis_prompt(self):
-        """Verifies multi-party prompt structure contains identity, speaker, and context."""
+        """Verifies multi-party prompt structure contains identity, speaker, context, and capability boundaries."""
         mock_identity = MagicMock()
         mock_identity.prompt.return_value = "You are Genesis."
 
         prompt = format_genesis_prompt(
             identity=mock_identity,
-            memory_text="- Fonaut likes coding",
+            memory_text="- Fodoh likes coding",
             conversation_context="[ChatGPT]: Hello",
             thought="Be polite",
             speaker="ChatGPT",
@@ -172,11 +201,13 @@ class TestConverseInterface(unittest.TestCase):
         )
 
         self.assertIn("You are Genesis.", prompt)
-        self.assertIn("Fonaut likes coding", prompt)
+        self.assertIn("Fodoh likes coding", prompt)
         self.assertIn("[ChatGPT]: Hello", prompt)
         self.assertIn("Be polite", prompt)
         self.assertIn("[ChatGPT]:", prompt)
         self.assertIn("What is your purpose?", prompt)
+        self.assertIn("Hardware & Sensory Boundaries", prompt)
+        self.assertIn("NO cameras", prompt)
 
 
 if __name__ == "__main__":

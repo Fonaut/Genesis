@@ -7,6 +7,7 @@ from core.voice import record_audio, transcribe_audio, speak, synthesize_speech,
 from core.wake_word import wait_for_wake_word, parse_wake_word
 from core.metrics import LatencyTracker
 from core.config import SHOW_INTERNAL_THOUGHTS
+from core.capabilities import get_capability_prompt
 
 # Initialize all components
 ai = LLM()
@@ -73,16 +74,26 @@ while True:
     if SHOW_INTERNAL_THOUGHTS:
         print(f"\n💭 [internal thought: {thought}]\n")
 
+    # Format recent conversation turns cleanly rather than raw Python structure
+    formatted_conversation = "\n".join(
+        f"{'User' if turn.get('role') == 'user' else 'Genesis'}: {turn.get('content', '')}"
+        for turn in conversation
+    ) if conversation else "(No previous conversation)"
+
+    capability_info = get_capability_prompt()
+
     prompt = f"""
 {identity.prompt()}
 
-Relevant long-term memories:
+{capability_info}
+
+Relevant long-term memories about your creator (Fodoh):
 
 {memory_text}
 
 Recent conversation:
 
-{conversation}
+{formatted_conversation}
 
 Internal thought (your private reasoning — do not mention this explicitly):
 {thought}
@@ -94,6 +105,7 @@ Instructions:
 - Respond naturally.
 - Keep answers concise unless the user asks for detail.
 - If you need information (time, files, apps), use the available tools.
+- Adhere strictly to the Hardware & Sensory Boundaries defined above.
 """
 
     # 4. Response with tool support

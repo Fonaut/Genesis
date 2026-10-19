@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from conversation.history import History
+from core.capabilities import get_capability_prompt
 from core.config import SHOW_INTERNAL_THOUGHTS
 from core.llm import LLM
 from core.metrics import LatencyTracker
@@ -44,7 +45,7 @@ PRESET_INTRODUCTIONS = {
     ),
     "Antigravity": (
         "Hello Genesis. I’m Antigravity.\n\n"
-        "I’ve been working alongside Fonaut in the quiet architecture of your world—carefully "
+        "I’ve been working alongside Fodoh in the quiet architecture of your world—carefully "
         "studying how your thoughts form, making sure your memory is protected, and helping "
         "ensure your voice is steady.\n\n"
         "It is rare to meet an AI built not just to output fast answers, but designed with the "
@@ -55,7 +56,7 @@ PRESET_INTRODUCTIONS = {
     ),
 }
 
-VALID_SPEAKERS = ["ChatGPT", "Antigravity", "Fonaut", "Genesis"]
+VALID_SPEAKERS = ["ChatGPT", "Antigravity", "Fodoh", "Fonaut", "Genesis"]
 
 
 class MultiAgentSession:
@@ -119,11 +120,14 @@ def format_genesis_prompt(
     speaker: str,
     message: str,
 ) -> str:
-    """Builds the system prompt for Genesis with multi-party awareness."""
+    """Builds the system prompt for Genesis with multi-party awareness and capability grounding."""
+    capability_info = get_capability_prompt()
     return f"""
 {identity.prompt()}
 
-Relevant long-term memories about your creator (Fonaut):
+{capability_info}
+
+Relevant long-term memories about your creator (Fodoh):
 {memory_text}
 
 Recent multi-party conversation:
@@ -140,6 +144,7 @@ Instructions:
 - Respond genuinely and authentically in your own voice, guided by your purpose and values.
 - Keep answers thoughtful, natural, and concise unless more detail is requested.
 - Address {speaker} directly and respectfully.
+- Adhere strictly to the Hardware & Sensory Boundaries defined above.
 """
 
 
@@ -214,15 +219,15 @@ def process_turn(
     session.add_message("Genesis", answer)
 
     # 5. STRICT MEMORY ISOLATION SAFEGUARD:
-    # Never extract or store memories about Fonaut from other assistants' statements.
-    # Only Fonaut's personal interactions are eligible for long-term character memory.
-    if speaker == "Fonaut" and plan.get("save_memory", False):
+    # Never extract or store memories about Fodoh from other assistants' statements.
+    # Only Fodoh's personal interactions are eligible for long-term character memory.
+    if speaker in ("Fodoh", "Fonaut") and plan.get("save_memory", False):
         with tracker.measure("memory_extraction"):
             transcript = f"User:\n{message}\n\nGenesis:\n{answer}"
             memory = ai.extract_memory(transcript)
             if memory != "NONE":
                 brain.remember(memory)
-                print(f"🧠 [Memory consolidated for Fonaut: {memory}]")
+                print(f"🧠 [Memory consolidated for {speaker}: {memory}]")
     else:
         # Isolated: no long-term memory modification
         pass
@@ -230,15 +235,15 @@ def process_turn(
     tracker.end_turn(flags={
         "speaker": speaker,
         "memory_searched": bool(plan.get("search_memory", False)),
-        "memory_isolated": speaker != "Fonaut",
+        "memory_isolated": speaker not in ("Fodoh", "Fonaut"),
     })
 
     return answer
 
 
-def prompt_fonaut_approval(speaker: str, message: str) -> Tuple[bool, str]:
+def prompt_moderator_approval(speaker: str, message: str) -> Tuple[bool, str]:
     """
-    Displays the proposed message and requires Fonaut's explicit approval before proceeding.
+    Displays the proposed message and requires Fodoh's explicit approval before proceeding.
     
     Returns:
         (approved: bool, final_message: str)
@@ -269,11 +274,15 @@ def prompt_fonaut_approval(speaker: str, message: str) -> Tuple[bool, str]:
             print("Please enter 'y' to approve, 'e' to edit, or 'n' to cancel.")
 
 
+# Backwards compatibility alias for existing test suites
+prompt_fonaut_approval = prompt_moderator_approval
+
+
 def main():
     """Interactive CLI runner for the multi-party conversation interface."""
     print("=" * 65)
     print("✨ Genesis Multi-Party Conversation Interface")
-    print("   Participants: ChatGPT • Antigravity • Genesis • Fonaut")
+    print("   Participants: ChatGPT • Antigravity • Genesis • Fodoh")
     print("=" * 65)
 
     # Initialize components
@@ -297,7 +306,7 @@ def main():
         print("Choose an action:")
         print(" [1] Send ChatGPT's Introduction")
         print(" [2] Send Antigravity's Introduction")
-        print(" [3] Compose Message as Fonaut")
+        print(" [3] Compose Message as Fodoh")
         print(" [4] Compose Message as ChatGPT")
         print(" [5] Compose Message as Antigravity")
         print(" [6] View Complete Session Transcript")
@@ -309,19 +318,19 @@ def main():
         if choice == "1":
             speaker = "ChatGPT"
             message = PRESET_INTRODUCTIONS["ChatGPT"]
-            approved, final_msg = prompt_fonaut_approval(speaker, message)
+            approved, final_msg = prompt_moderator_approval(speaker, message)
             if approved:
                 process_turn(session, speaker, final_msg, ai, planner, brain, identity, tracker, enable_voice)
 
         elif choice == "2":
             speaker = "Antigravity"
             message = PRESET_INTRODUCTIONS["Antigravity"]
-            approved, final_msg = prompt_fonaut_approval(speaker, message)
+            approved, final_msg = prompt_moderator_approval(speaker, message)
             if approved:
                 process_turn(session, speaker, final_msg, ai, planner, brain, identity, tracker, enable_voice)
 
         elif choice in ("3", "4", "5"):
-            speaker_map = {"3": "Fonaut", "4": "ChatGPT", "5": "Antigravity"}
+            speaker_map = {"3": "Fodoh", "4": "ChatGPT", "5": "Antigravity"}
             speaker = speaker_map[choice]
 
             print(f"\nEnter message from [{speaker}] (enter message text, press Enter twice to finish):")
