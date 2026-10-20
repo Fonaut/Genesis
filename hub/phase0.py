@@ -364,12 +364,10 @@ class CliAntigravityAgent(AntigravityInterface):
             "--disable-slash-commands",
         ]
 
-        # Scoped auth environment: inject GEMINI_API_KEY / ANTIGRAVITY_API_KEY if configured
+        # Strict Subscription Sign-In: Do NOT inject GEMINI_API_KEY into CLI environment.
+        # This guarantees agy strictly uses the Google AI Pro subscription session
+        # stored in ~/.gemini/antigravity-cli/session.json rather than developer API billing.
         extra_env = {}
-        for key in ["GEMINI_API_KEY", "ANTIGRAVITY_API_KEY"]:
-            val = os.getenv(key)
-            if val:
-                extra_env[key] = val
 
         t0 = time.perf_counter()
         try:
@@ -726,6 +724,13 @@ def main():
     print(f"   Execution Mode: {'🔴 LIVE API CALLS' if args.live else '🟢 100% OFFLINE DRY-RUN (ZERO API CALLS)'}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
     print("=" * 75)
+
+    if args.mechanism in ("cli", "gemini_connectivity") and not args.live:
+        print(f"\n⚠️  SAFETY ABORT: Outbound mechanism '{args.mechanism}' requires the '--live' flag.")
+        print("   Without '--live', execution is locked in 100% offline dry-run mode.")
+        print("   To run offline safely, use: .venv/bin/python3 hub/phase0.py --mechanism=mock")
+        print("   To authorize live requests with approval gates, use: .venv/bin/python3 hub/phase0.py --mechanism=cli --live\n")
+        raise HubSafetyError(f"Outbound mechanism '{args.mechanism}' requires explicit '--live' flag.")
 
     if args.mechanism == "mock":
         agent = MockAntigravityAgent()

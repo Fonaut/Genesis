@@ -306,6 +306,14 @@ class TestPhase0HubEngine(unittest.TestCase):
         self.assertEqual(res_mock.returncode, 0)
         self.assertIn("SESSION SUMMARY: CANCELLED_BY_USER", res_mock.stdout)
 
+        # Test 3: --mechanism=cli without --live MUST abort immediately with HubSafetyError
+        res_cli_no_live = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "hub" / "phase0.py"), "--mechanism=cli"],
+            capture_output=True, text=True, timeout=5
+        )
+        self.assertNotEqual(res_cli_no_live.returncode, 0)
+        self.assertIn("SAFETY ABORT: Outbound mechanism 'cli' requires the '--live' flag", res_cli_no_live.stdout + res_cli_no_live.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
