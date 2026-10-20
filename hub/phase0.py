@@ -785,7 +785,7 @@ class Phase0Orchestrator:
                 speaker="Genesis",
                 content=gen_reply,
                 timestamp=datetime.now(timezone.utc).isoformat(),
-                thought=gen_thought,
+                thought=None,  # Requirement: Do not persist Genesis's private internal reasoning in audit log
                 tokens_estimated=(len(ag_response) + len(gen_reply)) // 4,
                 latency_sec=round(gen_latency, 3),
                 metadata=gen_meta,

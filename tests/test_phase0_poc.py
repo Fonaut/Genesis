@@ -484,6 +484,36 @@ class TestPhase0HubEngine(unittest.TestCase):
             self.assertNotIn("super_secret_key_12345", log_content)
             self.assertIn("Normal log line", log_content)
 
+    def test_genesis_internal_reasoning_not_persisted_in_audit_log(self):
+        """
+        REQUIREMENT:
+        Genesis's private internal reasoning must NOT be persisted in the audit log.
+        Only the final reply and safe diagnostics may be recorded.
+        """
+        mock_agent = MockAntigravityAgent(response_text="Antigravity answer.")
+        gate = HumanApprovalGate(auto_approve=True)
+        genesis = GenesisParticipant(is_live=False)
+
+        orchestrator = Phase0Orchestrator(
+            antigravity_agent=mock_agent,
+            genesis_participant=genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        audit = orchestrator.execute_poc(probe_prompt="Testing audit thought suppression")
+
+        self.assertEqual(audit.status, "COMPLETED")
+        self.assertEqual(len(audit.turns), 2)
+        # Genesis turn (Turn 2) MUST have thought set to None in audit log
+        self.assertIsNone(audit.turns[1].thought)
+
+        # Confirm persisted JSON also has thought as null
+        log_files = list(self.log_dir.glob("phase0_*.json"))
+        audit_json = json.loads(log_files[0].read_text())
+        self.assertIsNone(audit_json["turns"][1]["thought"])
+        self.assertTrue(len(audit_json["turns"][1]["content"]) > 0)
+
 
 if __name__ == "__main__":
     unittest.main()
