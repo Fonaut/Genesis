@@ -88,10 +88,16 @@ async def get_status():
             "error_message": triad.error_message,
         }
 
+    seatbelt_active = (sys.platform == "darwin" and (Path("/usr/bin/sandbox-exec").exists() or os.path.exists("/usr/bin/sandbox-exec")))
+    sandbox_label = "Seatbelt Active" if seatbelt_active else "Filesystem Isolated"
+
     return {
         "kill_switch_active": engine.is_kill_switch_active,
         "max_cost_usd": engine.max_cost_usd,
         "cumulative_cost_usd": round(engine.governor.cumulative_cost_usd, 6),
+        "sandbox_status": sandbox_label,
+        "sandbox_path": str(engine.sandbox.sandbox_path),
+        "is_live_active": triad.is_live if triad else False,
         "active_triad_session": triad_data,
         "participants": [
             {"id": "Genesis", "name": "Genesis", "role": "Voice Companion & Orchestrator", "color": "purple"},

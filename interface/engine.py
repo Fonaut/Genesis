@@ -83,14 +83,11 @@ class CommunicationInterfaceEngine:
 
     @property
     def is_kill_switch_active(self) -> bool:
-        stop_file = PROJECT_ROOT / ".hub_stopped"
-        return stop_file.exists() or self.governor.kill_switch_active
+        return self.governor.is_kill_switch_active
 
     def trigger_kill_switch(self) -> Dict[str, Any]:
         """Activates emergency stop immediately, blocking all outbound traffic."""
-        stop_file = PROJECT_ROOT / ".hub_stopped"
-        stop_file.touch()
-        self.governor.kill_switch_active = True
+        self.governor.stop_file_path.touch()
 
         if self.active_triad_session and self.active_triad_session.status in ("ACTIVE", "PENDING_APPROVAL"):
             self.active_triad_session.status = "CANCELLED_BY_USER"
@@ -104,10 +101,8 @@ class CommunicationInterfaceEngine:
 
     def clear_kill_switch(self) -> Dict[str, Any]:
         """Clears the emergency stop after user confirmation."""
-        stop_file = PROJECT_ROOT / ".hub_stopped"
-        if stop_file.exists():
-            stop_file.unlink()
-        self.governor.kill_switch_active = False
+        if self.governor.stop_file_path.exists():
+            self.governor.stop_file_path.unlink()
         return {
             "status": "READY",
             "message": "Emergency kill switch cleared. System operational.",

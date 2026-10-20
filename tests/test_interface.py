@@ -41,13 +41,11 @@ class TestCommunicationInterface(unittest.TestCase):
         stop_file = PROJECT_ROOT / ".hub_stopped"
         if stop_file.exists():
             stop_file.unlink()
-        engine.governor.kill_switch_active = False
 
     def tearDown(self):
         stop_file = PROJECT_ROOT / ".hub_stopped"
         if stop_file.exists():
             stop_file.unlink()
-        engine.governor.kill_switch_active = False
         shutil.rmtree(self.test_log_dir, ignore_errors=True)
 
     # -------------------------------------------------------------------------
@@ -59,15 +57,23 @@ class TestCommunicationInterface(unittest.TestCase):
         self.assertEqual(res.status_code, 200)
         self.assertIn("Genesis Communication Interface", res.text)
         self.assertIn("EMERGENCY STOP", res.text)
+        self.assertIn("costCapVal", res.text)
+        self.assertIn("sandboxProfileVal", res.text)
 
     def test_status_endpoint(self):
         res = self.client.get("/api/status")
         self.assertEqual(res.status_code, 200)
         data = res.json()
         self.assertIn("kill_switch_active", data)
+        self.assertFalse(data["kill_switch_active"])
         self.assertIn("participants", data)
         self.assertEqual(len(data["participants"]), 3)
         self.assertEqual(data["max_cost_usd"], 0.05)
+        self.assertEqual(data["cumulative_cost_usd"], 0.0)
+        self.assertIn(data["sandbox_status"], ["Seatbelt Active", "Filesystem Isolated"])
+        self.assertIn("sandbox_path", data)
+        self.assertFalse(data["is_live_active"])
+        self.assertIsNone(data["active_triad_session"])
 
     # -------------------------------------------------------------------------
     # 2. Individual Agent Routing (1-on-1 Mode)
@@ -219,28 +225,84 @@ class TestCommunicationInterface(unittest.TestCase):
         self.assertEqual(len(state["turns"]), 0)
 
     # -------------------------------------------------------------------------
-    # 4. Emergency Stop (Kill Switch)
+    # 4. Emergency Stop (Kill Switch) & Fail-Closed Safety
     # -------------------------------------------------------------------------
 
     def test_kill_switch_triggers_and_blocks_requests(self):
-        # Trigger emergency stop
+        # 1. Trigger emergency stop
         res = self.client.post("/api/kill-switch", json={"action": "trigger"})
         self.assertEqual(res.status_code, 200)
         self.assertTrue(engine.is_kill_switch_active)
+        self.assertTrue(engine.governor.is_kill_switch_active)
 
-        # Subsequent individual message must be rejected
+        # Status endpoint must reflect kill_switch_active = True
+        status_res = self.client.get("/api/status")
+        self.assertEqual(status_res.status_code, 200)
+        self.assertTrue(status_res.json()["kill_switch_active"])
+
+        # 2. Subsequent individual message must fail closed (400)
         chat_res = self.client.post("/api/chat/individual", json={
             "recipient": "Genesis",
-            "message": "Hello",
+            "message": "Hello while stopped",
             "is_live": False,
         })
         self.assertEqual(chat_res.status_code, 400)
         self.assertIn("Emergency kill switch is active", chat_res.json()["detail"])
 
-        # Reset kill switch
+        # 3. Subsequent triad initiation must fail closed (400)
+        triad_res = self.client.post("/api/chat/triad/initiate", json={
+            "probe_prompt": "Hello while stopped",
+            "is_live": False,
+        })
+        self.assertEqual(triad_res.status_code, 400)
+        self.assertIn("Emergency kill switch is active", triad_res.json()["detail"])
+
+        # 4. Subsequent gate response must fail closed (400)
+        gate_res = self.client.post("/api/chat/triad/respond-gate", json={
+            "approval_id": "nonexistent_gate",
+            "action": "approve",
+        })
+        self.assertEqual(gate_res.status_code, 400)
+        self.assertIn("Emergency kill switch is active", gate_res.json()["detail"])
+
+        # 5. Clear emergency stop
         clear_res = self.client.post("/api/kill-switch", json={"action": "clear"})
         self.assertEqual(clear_res.status_code, 200)
         self.assertFalse(engine.is_kill_switch_active)
+        self.assertFalse(engine.governor.is_kill_switch_active)
+
+        # Status endpoint must reflect kill_switch_active = False
+        status_cleared = self.client.get("/api/status")
+        self.assertEqual(status_cleared.status_code, 200)
+        self.assertFalse(status_cleared.json()["kill_switch_active"])
+
+        # 6. Operations resume normally
+        resume_chat = self.client.post("/api/chat/individual", json={
+            "recipient": "Genesis",
+            "message": "Hello after clearing stop",
+            "is_live": False,
+        })
+        self.assertEqual(resume_chat.status_code, 200)
+        self.assertEqual(resume_chat.json()["speaker"], "Genesis")
+
+    def test_safety_governor_is_kill_switch_active_property(self):
+        """Regression test: verify SafetyGovernor.is_kill_switch_active property without monkey patching."""
+        gov = engine.governor
+        stop_file = gov.stop_file_path
+
+        # Absent flag
+        if stop_file.exists():
+            stop_file.unlink()
+        self.assertFalse(gov.is_kill_switch_active)
+
+        # Present flag
+        stop_file.touch()
+        try:
+            self.assertTrue(gov.is_kill_switch_active)
+        finally:
+            if stop_file.exists():
+                stop_file.unlink()
+        self.assertFalse(gov.is_kill_switch_active)
 
     # -------------------------------------------------------------------------
     # 5. Development Journal Endpoints

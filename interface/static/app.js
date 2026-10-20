@@ -82,6 +82,22 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---------------------------------------------------------------------------
   // 2. Execution Mode (Offline vs Live)
   // ---------------------------------------------------------------------------
+  function setOfflineBadge() {
+    modeBadge.querySelector(".dot").className = "dot offline";
+    modeBadge.style.background = "rgba(16, 185, 129, 0.1)";
+    modeBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
+    modeBadge.style.color = "#34d399";
+    modeText.textContent = "Offline Mode (Zero Cost)";
+  }
+
+  function setLiveBadge() {
+    modeBadge.querySelector(".dot").className = "dot live";
+    modeBadge.style.background = "rgba(239, 68, 68, 0.1)";
+    modeBadge.style.borderColor = "rgba(239, 68, 68, 0.3)";
+    modeBadge.style.color = "#f87171";
+    modeText.textContent = "🔴 LIVE API MODE";
+  }
+
   liveModeToggle.addEventListener("change", (e) => {
     isLiveMode = e.target.checked;
     if (isLiveMode) {
@@ -94,19 +110,12 @@ document.addEventListener("DOMContentLoaded", () => {
       if (!confirmLive) {
         liveModeToggle.checked = false;
         isLiveMode = false;
+        setOfflineBadge();
         return;
       }
-      modeBadge.querySelector(".dot").className = "dot live";
-      modeBadge.style.background = "rgba(239, 68, 68, 0.1)";
-      modeBadge.style.borderColor = "rgba(239, 68, 68, 0.3)";
-      modeBadge.style.color = "#f87171";
-      modeText.textContent = "🔴 LIVE API MODE";
+      setLiveBadge();
     } else {
-      modeBadge.querySelector(".dot").className = "dot offline";
-      modeBadge.style.background = "rgba(16, 185, 129, 0.1)";
-      modeBadge.style.borderColor = "rgba(16, 185, 129, 0.3)";
-      modeBadge.style.color = "#34d399";
-      modeText.textContent = "Offline Mode (Zero Cost)";
+      setOfflineBadge();
     }
   });
 
@@ -472,16 +481,43 @@ document.addEventListener("DOMContentLoaded", () => {
       const data = await res.json();
       if (!res.ok) return;
 
+      // 1. Emergency Kill Switch Indicator & Fail-Closed Enforcement
       if (data.kill_switch_active) {
         killSwitchBanner.style.display = "flex";
+        if (liveModeToggle.checked) {
+          liveModeToggle.checked = false;
+          isLiveMode = false;
+          setOfflineBadge();
+        }
+        liveModeToggle.disabled = true;
       } else {
         killSwitchBanner.style.display = "none";
+        liveModeToggle.disabled = false;
       }
 
+      // 2. Cumulative Spending from backend governor
       if (data.cumulative_cost_usd !== undefined) {
         cumulativeCostVal.textContent = `$${data.cumulative_cost_usd.toFixed(6)}`;
       }
-    } catch (e) {}
+
+      // 3. Cost Cap Ceiling from backend governor
+      if (data.max_cost_usd !== undefined) {
+        const costCapEl = document.getElementById("costCapVal");
+        if (costCapEl) {
+          costCapEl.textContent = `$${data.max_cost_usd.toFixed(3)} USD`;
+        }
+      }
+
+      // 4. Sandbox Profile Indicator from backend engine
+      if (data.sandbox_status) {
+        const sandboxEl = document.getElementById("sandboxProfileVal");
+        if (sandboxEl) {
+          sandboxEl.textContent = data.sandbox_status;
+        }
+      }
+    } catch (e) {
+      console.error("Failed to update system status:", e);
+    }
   }
 
   // Poll intervals

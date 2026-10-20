@@ -77,9 +77,14 @@ class SafetyGovernor:
         self.current_turns = 0
         self.cumulative_cost_usd = 0.0
 
+    @property
+    def is_kill_switch_active(self) -> bool:
+        """Returns True if the emergency stop flag file exists."""
+        return self.stop_file_path.exists()
+
     def check_kill_switch(self) -> None:
         """Checks if emergency stop flag file exists."""
-        if self.stop_file_path.exists():
+        if self.is_kill_switch_active:
             raise KillSwitchActiveError(
                 f"Emergency stop file detected at: {self.stop_file_path}. Execution aborted immediately."
             )
