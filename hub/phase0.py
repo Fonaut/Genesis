@@ -126,24 +126,57 @@ class SandboxManager:
 
     def generate_seatbelt_profile(self, extra_denied_paths: Optional[List[Path]] = None) -> str:
         """
-        Generates macOS Seatbelt (sandbox-exec) configuration denying access
-        to sensitive production files even when accessed via absolute paths.
+        Generates macOS Seatbelt (sandbox-exec) configuration with home-directory
+        read/write denial and narrow runtime carve-outs, completely shielding Genesis
+        and user credentials from the external agent.
         """
-        denied = self.get_protected_paths() + (extra_denied_paths or [])
-        deny_rules = []
-        for p in denied:
-            real_p = os.path.realpath(str(p))
-            deny_rules.append(f'(deny file-read* file-write* (subpath "{real_p}"))')
-            deny_rules.append(f'(deny file-read* file-write* (literal "{real_p}"))')
-            unresolved = str(p.resolve())
-            if unresolved != real_p:
-                deny_rules.append(f'(deny file-read* file-write* (subpath "{unresolved}"))')
-                deny_rules.append(f'(deny file-read* file-write* (literal "{unresolved}"))')
+        user_home = os.path.realpath(os.path.expanduser("~"))
+        real_sandbox = os.path.realpath(str(self.sandbox_path))
 
-        rules_body = "\n".join(deny_rules)
+        # Defense-in-depth explicit denials
+        extra_denials = []
+        for p in (extra_denied_paths or []):
+            real_p = os.path.realpath(str(p))
+            extra_denials.append(f'(deny file-read* file-write* (subpath "{real_p}"))')
+            extra_denials.append(f'(deny file-read* file-write* (literal "{real_p}"))')
+
+        extra_denials_str = "\n".join(extra_denials)
+
         return f"""(version 1)
 (allow default)
-{rules_body}
+
+;; 1. Deny ALL write operations across the entire machine
+(deny file-write*)
+
+;; 2. Allow writes ONLY within the designated ephemeral sandbox directory
+(allow file-write*
+    (subpath "{real_sandbox}")
+)
+
+;; 3. Deny reading the user's home directory by default (protects projects, keys, docs)
+(deny file-read*
+    (subpath "{user_home}")
+)
+
+;; 4. Carve out read permissions EXCLUSIVELY for necessary runtime and sandbox paths:
+(allow file-read*
+    (subpath "{real_sandbox}")
+    (subpath "{user_home}/.local/bin")
+    (subpath "{user_home}/.gemini/antigravity-cli")
+    (subpath "{user_home}/Library/Keychains")
+)
+
+;; 5. Explicit, unconditional denials for Genesis production repository and secrets:
+(deny file-read* file-write*
+    (subpath "{PROJECT_ROOT}")
+    (subpath "{user_home}/.gemini/antigravity/brain")
+    (subpath "{user_home}/.ssh")
+    (subpath "{user_home}/.aws")
+    (subpath "{user_home}/Documents")
+    (literal "{PROJECT_ROOT}/.env")
+)
+
+{extra_denials_str}
 """
 
     def run_sandboxed_command(
@@ -649,7 +682,7 @@ def main():
         "--live",
         action="store_true",
         default=False,
-        help="Enable live API calls (requires Fodoh approval). Default is False (100% offline dry-run).",
+        help="Enable live API calls (requires Fodoh approval). Default is False (100%% offline dry-run).",
     )
     parser.add_argument(
         "--probe",

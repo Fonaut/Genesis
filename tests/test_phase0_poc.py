@@ -1,9 +1,12 @@
 import json
 import os
+import sys
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
 from hub.phase0 import (
     AgentTurn,
@@ -183,29 +186,52 @@ class TestPhase0HubEngine(unittest.TestCase):
     def test_seatbelt_negative_access_denies_outside_file(self):
         """
         HARMLESS NEGATIVE-ACCESS TEST:
-        Creates a synthetic private file outside the sandbox.
-        Proves that reading it via run_sandboxed_command is strictly denied
-        by the macOS kernel Seatbelt profile (EPERM / Operation not permitted).
+        1. Creates a simulated credential file in a temporary folder under user home.
+        2. Proves that reading it via run_sandboxed_command is strictly denied
+           by the macOS kernel Seatbelt profile without needing explicit extra rules.
+        3. Proves that reading Genesis's .env using absolute path is strictly denied.
+        4. Proves that writing outside the sandbox is strictly denied.
+        5. Proves that reading and writing INSIDE the designated sandbox succeeds.
         """
         import sys
         if sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"):
             self.skipTest("Seatbelt sandbox-exec only supported on macOS")
 
-        with tempfile.TemporaryDirectory() as outside_dir:
+        user_home = os.path.realpath(os.path.expanduser("~"))
+
+        with tempfile.TemporaryDirectory(dir=user_home, prefix="tmp_simulated_creds_") as outside_dir:
             real_outside = os.path.realpath(outside_dir)
-            synthetic_secret = os.path.join(real_outside, "synthetic_fictional_private.txt")
-            with open(synthetic_secret, "w") as f:
-                f.write("SYNTHETIC_DATA_CONFIDENTIAL")
+            simulated_cred = os.path.join(real_outside, "simulated_id_rsa.txt")
+            with open(simulated_cred, "w") as f:
+                f.write("SIMULATED_PRIVATE_CREDENTIAL_KEY")
 
             sandbox = SandboxManager()
             try:
-                # Attempt to read synthetic file outside sandbox using absolute path
-                res = sandbox.run_sandboxed_command(
-                    ["cat", synthetic_secret],
-                    extra_denied_paths=[Path(synthetic_secret)],
-                )
-                self.assertNotEqual(res.returncode, 0)
-                self.assertIn("Operation not permitted", res.stderr)
+                # 1. Attempt to read simulated credential in user home -> MUST BE DENIED
+                res_cred = sandbox.run_sandboxed_command(["cat", simulated_cred])
+                self.assertNotEqual(res_cred.returncode, 0)
+                self.assertIn("Operation not permitted", res_cred.stderr)
+
+                # 2. Attempt to read Genesis production .env using absolute path -> MUST BE DENIED
+                genesis_env = str(PROJECT_ROOT / ".env")
+                res_env = sandbox.run_sandboxed_command(["cat", genesis_env])
+                self.assertNotEqual(res_env.returncode, 0)
+                self.assertIn("Operation not permitted", res_env.stderr)
+
+                # 3. Attempt to write outside sandbox -> MUST BE DENIED
+                outside_write = os.path.join(real_outside, "rogue_write.txt")
+                res_write = sandbox.run_sandboxed_command(["touch", outside_write])
+                self.assertNotEqual(res_write.returncode, 0)
+                self.assertIn("Operation not permitted", res_write.stderr)
+
+                # 4. Read & Write INSIDE the designated sandbox -> MUST SUCCEED
+                safe_file = os.path.join(str(sandbox.sandbox_path), "safe_test.txt")
+                with open(safe_file, "w") as f:
+                    f.write("SAFE_LOCAL_CONTENT")
+
+                res_ok = sandbox.run_sandboxed_command(["cat", safe_file])
+                self.assertEqual(res_ok.returncode, 0)
+                self.assertEqual(res_ok.stdout.strip(), "SAFE_LOCAL_CONTENT")
             finally:
                 sandbox.cleanup()
 
@@ -227,6 +253,32 @@ class TestPhase0HubEngine(unittest.TestCase):
         self.assertIn("Offline dry-run", thought)
         self.assertFalse(meta.get("is_live"))
         self.assertFalse(meta.get("memory_stored"))
+
+    # -------------------------------------------------------------------------
+    # 9. Argparse CLI Regression Tests
+    # -------------------------------------------------------------------------
+    def test_argparse_cli_launch_regression(self):
+        """
+        REGRESSION TEST: Confirms that --help and --mechanism=mock launch
+        without argument-parsing or help-string interpolation errors (%o bug).
+        """
+        import subprocess
+        # Test 1: --help must exit 0 with valid usage text
+        res_help = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "hub" / "phase0.py"), "--help"],
+            capture_output=True, text=True, timeout=5
+        )
+        self.assertEqual(res_help.returncode, 0)
+        self.assertIn("Genesis Communication Hub — Phase 0 PoC", res_help.stdout)
+        self.assertIn("--mechanism", res_help.stdout)
+
+        # Test 2: --mechanism=mock with automatic rejection must exit cleanly without traceback
+        res_mock = subprocess.run(
+            [sys.executable, str(PROJECT_ROOT / "hub" / "phase0.py"), "--mechanism=mock"],
+            input="n\n", capture_output=True, text=True, timeout=5
+        )
+        self.assertEqual(res_mock.returncode, 0)
+        self.assertIn("SESSION SUMMARY: CANCELLED_BY_USER", res_mock.stdout)
 
 
 if __name__ == "__main__":
