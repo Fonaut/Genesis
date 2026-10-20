@@ -62,6 +62,12 @@ class TestPhase0HubEngine(unittest.TestCase):
                 self.assertNotIn("PRIVATE_TOKEN", clean_env)
                 self.assertEqual(clean_env.get("SAFE_VAR"), "visible_safe_value")
                 self.assertEqual(clean_env.get("GENESIS_SANDBOX"), "1")
+
+                # 3. Scoped extra environment injection check
+                clean_scoped = sandbox.get_sanitized_env(extra_env={"GEMINI_API_KEY": "scoped-allowed-key"})
+                self.assertEqual(clean_scoped.get("GEMINI_API_KEY"), "scoped-allowed-key")
+                self.assertNotIn("OPENAI_API_KEY", clean_scoped)
+                self.assertNotIn("PRIVATE_TOKEN", clean_scoped)
             finally:
                 sandbox.cleanup()
 
@@ -232,6 +238,26 @@ class TestPhase0HubEngine(unittest.TestCase):
                 res_ok = sandbox.run_sandboxed_command(["cat", safe_file])
                 self.assertEqual(res_ok.returncode, 0)
                 self.assertEqual(res_ok.stdout.strip(), "SAFE_LOCAL_CONTENT")
+
+                # 5. Attempt to read user's Keychains directory and login.keychain-db -> MUST BE DENIED
+                keychain_dir = os.path.join(user_home, "Library", "Keychains")
+                if os.path.exists(keychain_dir):
+                    res_kc = sandbox.run_sandboxed_command(["ls", keychain_dir])
+                    self.assertNotEqual(res_kc.returncode, 0)
+                    self.assertIn("Operation not permitted", res_kc.stderr)
+
+                    keychain_db = os.path.join(keychain_dir, "login.keychain-db")
+                    if os.path.exists(keychain_db):
+                        res_db = sandbox.run_sandboxed_command(["cat", keychain_db])
+                        self.assertNotEqual(res_db.returncode, 0)
+                        self.assertIn("Operation not permitted", res_db.stderr)
+
+                # 6. Attempt to read user's SSH keys directory -> MUST BE DENIED
+                ssh_dir = os.path.join(user_home, ".ssh")
+                if os.path.exists(ssh_dir):
+                    res_ssh = sandbox.run_sandboxed_command(["ls", ssh_dir])
+                    self.assertNotEqual(res_ssh.returncode, 0)
+                    self.assertIn("Operation not permitted", res_ssh.stderr)
             finally:
                 sandbox.cleanup()
 

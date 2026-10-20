@@ -100,8 +100,11 @@ class SandboxManager:
             "It has zero access to production memories, credentials, or personal history.\n"
         )
 
-    def get_sanitized_env(self) -> Dict[str, str]:
-        """Returns environment variables with all API keys and secrets stripped."""
+    def get_sanitized_env(self, extra_env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+        """
+        Returns environment variables with all API keys and secrets stripped,
+        optionally passing strictly scoped runtime environment variables.
+        """
         clean_env = {}
         for k, v in os.environ.items():
             # Strip all sensitive credentials and API keys
@@ -112,6 +115,8 @@ class SandboxManager:
         # Add explicit sandbox markers
         clean_env["GENESIS_SANDBOX"] = "1"
         clean_env["GENESIS_WORKSPACE_ROOT"] = str(self.sandbox_path)
+        if extra_env:
+            clean_env.update(extra_env)
         return clean_env
 
     def get_protected_paths(self) -> List[Path]:
@@ -163,16 +168,17 @@ class SandboxManager:
     (subpath "{real_sandbox}")
     (subpath "{user_home}/.local/bin")
     (subpath "{user_home}/.gemini/antigravity-cli")
-    (subpath "{user_home}/Library/Keychains")
 )
 
-;; 5. Explicit, unconditional denials for Genesis production repository and secrets:
+;; 5. Explicit, unconditional denials for Genesis production repository and credentials:
 (deny file-read* file-write*
     (subpath "{PROJECT_ROOT}")
     (subpath "{user_home}/.gemini/antigravity/brain")
     (subpath "{user_home}/.ssh")
     (subpath "{user_home}/.aws")
+    (subpath "{user_home}/.config/gcloud")
     (subpath "{user_home}/Documents")
+    (subpath "{user_home}/Library/Keychains")
     (literal "{PROJECT_ROOT}/.env")
 )
 
@@ -184,12 +190,13 @@ class SandboxManager:
         cmd: List[str],
         timeout_sec: float = 30.0,
         extra_denied_paths: Optional[List[Path]] = None,
+        extra_env: Optional[Dict[str, str]] = None,
     ) -> subprocess.CompletedProcess:
         """
         Executes a command inside the sandbox wrapped with macOS Seatbelt
         kernel-enforced restrictions.
         """
-        env = self.get_sanitized_env()
+        env = self.get_sanitized_env(extra_env=extra_env)
         seatbelt_profile = self.generate_seatbelt_profile(extra_denied_paths=extra_denied_paths)
 
         if sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"):
@@ -330,7 +337,13 @@ class CliAntigravityAgent(AntigravityInterface):
     Requires 'agy' to be installed and authenticated.
     """
 
-    def __init__(self, cli_path: str = "agy", timeout_sec: float = 30.0):
+    def __init__(self, cli_path: Optional[str] = None, timeout_sec: float = 30.0):
+        if cli_path is None:
+            local_bin_agy = Path.home() / ".local" / "bin" / "agy"
+            if local_bin_agy.exists():
+                cli_path = str(local_bin_agy)
+            else:
+                cli_path = "agy"
         self.cli_path = cli_path
         self.timeout_sec = timeout_sec
 
@@ -348,11 +361,23 @@ class CliAntigravityAgent(AntigravityInterface):
             self.cli_path,
             "-p", prompt,
             "--output-format", "json",
+            "--disable-slash-commands",
         ]
+
+        # Scoped auth environment: inject GEMINI_API_KEY / ANTIGRAVITY_API_KEY if configured
+        extra_env = {}
+        for key in ["GEMINI_API_KEY", "ANTIGRAVITY_API_KEY"]:
+            val = os.getenv(key)
+            if val:
+                extra_env[key] = val
 
         t0 = time.perf_counter()
         try:
-            res = sandbox.run_sandboxed_command(cmd, timeout_sec=self.timeout_sec)
+            res = sandbox.run_sandboxed_command(
+                cmd,
+                timeout_sec=self.timeout_sec,
+                extra_env=extra_env if extra_env else None,
+            )
         except subprocess.TimeoutExpired as err:
             raise HubSafetyError(f"Antigravity CLI execution timed out after {self.timeout_sec}s") from err
 
