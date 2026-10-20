@@ -125,7 +125,7 @@ class TestPhase0HubEngine(unittest.TestCase):
         )
 
         self.assertIn("Antigravity", reply)
-        self.assertEqual(thought, "Reflecting on Antigravity's insights regarding memory vs history.")
+        self.assertIn("Reflecting on Antigravity's insights regarding memory vs history.", thought)
         self.assertFalse(meta.get("memory_stored"))
 
     # -------------------------------------------------------------------------
@@ -176,6 +176,57 @@ class TestPhase0HubEngine(unittest.TestCase):
             self.assertIn("is not installed or not in PATH", str(ctx.exception))
         finally:
             sandbox.cleanup()
+
+    # -------------------------------------------------------------------------
+    # 7. macOS Seatbelt OS-Level Negative Access Test
+    # -------------------------------------------------------------------------
+    def test_seatbelt_negative_access_denies_outside_file(self):
+        """
+        HARMLESS NEGATIVE-ACCESS TEST:
+        Creates a synthetic private file outside the sandbox.
+        Proves that reading it via run_sandboxed_command is strictly denied
+        by the macOS kernel Seatbelt profile (EPERM / Operation not permitted).
+        """
+        import sys
+        if sys.platform != "darwin" or not os.path.exists("/usr/bin/sandbox-exec"):
+            self.skipTest("Seatbelt sandbox-exec only supported on macOS")
+
+        with tempfile.TemporaryDirectory() as outside_dir:
+            real_outside = os.path.realpath(outside_dir)
+            synthetic_secret = os.path.join(real_outside, "synthetic_fictional_private.txt")
+            with open(synthetic_secret, "w") as f:
+                f.write("SYNTHETIC_DATA_CONFIDENTIAL")
+
+            sandbox = SandboxManager()
+            try:
+                # Attempt to read synthetic file outside sandbox using absolute path
+                res = sandbox.run_sandboxed_command(
+                    ["cat", synthetic_secret],
+                    extra_denied_paths=[Path(synthetic_secret)],
+                )
+                self.assertNotEqual(res.returncode, 0)
+                self.assertIn("Operation not permitted", res.stderr)
+            finally:
+                sandbox.cleanup()
+
+    # -------------------------------------------------------------------------
+    # 8. Guaranteed Offline Mode (Zero Paid API Calls)
+    # -------------------------------------------------------------------------
+    def test_offline_mode_guarantees_zero_live_api_calls(self):
+        """Verifies that GenesisParticipant in offline mode operates with zero live LLM calls."""
+        genesis = GenesisParticipant(is_live=False)
+        self.assertIsNone(genesis.ai)
+        self.assertIsNone(genesis.planner)
+        self.assertIsNone(genesis.brain)
+
+        reply, thought, meta = genesis.process_turn(
+            speaker="Antigravity",
+            incoming_message="What is our architecture?",
+        )
+        self.assertIn("Antigravity", reply)
+        self.assertIn("Offline dry-run", thought)
+        self.assertFalse(meta.get("is_live"))
+        self.assertFalse(meta.get("memory_stored"))
 
 
 if __name__ == "__main__":

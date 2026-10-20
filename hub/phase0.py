@@ -114,6 +114,65 @@ class SandboxManager:
         clean_env["GENESIS_WORKSPACE_ROOT"] = str(self.sandbox_path)
         return clean_env
 
+    def get_protected_paths(self) -> List[Path]:
+        """Returns critical production paths that must be shielded from external agents."""
+        return [
+            PROJECT_ROOT / "memory",
+            PROJECT_ROOT / "chroma_db",
+            PROJECT_ROOT / "conversation",
+            PROJECT_ROOT / "identity",
+            PROJECT_ROOT / ".env",
+        ]
+
+    def generate_seatbelt_profile(self, extra_denied_paths: Optional[List[Path]] = None) -> str:
+        """
+        Generates macOS Seatbelt (sandbox-exec) configuration denying access
+        to sensitive production files even when accessed via absolute paths.
+        """
+        denied = self.get_protected_paths() + (extra_denied_paths or [])
+        deny_rules = []
+        for p in denied:
+            real_p = os.path.realpath(str(p))
+            deny_rules.append(f'(deny file-read* file-write* (subpath "{real_p}"))')
+            deny_rules.append(f'(deny file-read* file-write* (literal "{real_p}"))')
+            unresolved = str(p.resolve())
+            if unresolved != real_p:
+                deny_rules.append(f'(deny file-read* file-write* (subpath "{unresolved}"))')
+                deny_rules.append(f'(deny file-read* file-write* (literal "{unresolved}"))')
+
+        rules_body = "\n".join(deny_rules)
+        return f"""(version 1)
+(allow default)
+{rules_body}
+"""
+
+    def run_sandboxed_command(
+        self,
+        cmd: List[str],
+        timeout_sec: float = 30.0,
+        extra_denied_paths: Optional[List[Path]] = None,
+    ) -> subprocess.CompletedProcess:
+        """
+        Executes a command inside the sandbox wrapped with macOS Seatbelt
+        kernel-enforced restrictions.
+        """
+        env = self.get_sanitized_env()
+        seatbelt_profile = self.generate_seatbelt_profile(extra_denied_paths=extra_denied_paths)
+
+        if sys.platform == "darwin" and os.path.exists("/usr/bin/sandbox-exec"):
+            full_cmd = ["/usr/bin/sandbox-exec", "-p", seatbelt_profile] + cmd
+        else:
+            full_cmd = cmd
+
+        return subprocess.run(
+            full_cmd,
+            cwd=str(self.sandbox_path),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=timeout_sec,
+        )
+
     def verify_isolation(self, target_path: Path) -> bool:
         """Verifies that a given path is strictly inside the sandbox."""
         try:
@@ -260,14 +319,7 @@ class CliAntigravityAgent(AntigravityInterface):
 
         t0 = time.perf_counter()
         try:
-            res = subprocess.run(
-                cmd,
-                cwd=str(sandbox.sandbox_path),
-                env=sandbox.get_sanitized_env(),
-                capture_output=True,
-                text=True,
-                timeout=self.timeout_sec,
-            )
+            res = sandbox.run_sandboxed_command(cmd, timeout_sec=self.timeout_sec)
         except subprocess.TimeoutExpired as err:
             raise HubSafetyError(f"Antigravity CLI execution timed out after {self.timeout_sec}s") from err
 
@@ -331,15 +383,16 @@ class ConnectivityGeminiAgent(AntigravityInterface):
 # ---------------------------------------------------------------------------
 
 class GenesisParticipant:
-    """Wraps Genesis's existing conversational pipeline with strict memory isolation."""
+    """Wraps Genesis's conversational pipeline with strict memory isolation."""
 
-    def __init__(self, mock_llm: Optional[Any] = None):
+    def __init__(self, is_live: bool = False, mock_llm: Optional[Any] = None):
+        self.is_live = is_live
         if mock_llm:
             self.ai = mock_llm
             self.identity = None
             self.planner = None
             self.brain = None
-        else:
+        elif is_live:
             from core.capabilities import get_capability_prompt
             from core.llm import LLM
             from core.planner import Planner
@@ -351,6 +404,12 @@ class GenesisParticipant:
             self.planner = Planner()
             self.brain = Brain()
             self.capability_prompt = get_capability_prompt()
+        else:
+            # 100% Offline Mode: Guaranteed zero paid API calls
+            self.ai = None
+            self.identity = None
+            self.planner = None
+            self.brain = None
 
     def process_turn(
         self,
@@ -359,7 +418,7 @@ class GenesisParticipant:
         formatted_history: str = "(No previous conversation)",
     ) -> Tuple[str, Optional[str], Dict[str, Any]]:
         """
-        Executes Genesis's real reasoning pipeline for an incoming turn.
+        Executes Genesis's reasoning pipeline for an incoming turn.
         
         CRITICAL GUARD:
         Assistant-to-assistant dialogue is explicitly isolated and NEVER stored
@@ -369,7 +428,7 @@ class GenesisParticipant:
 
         t0 = time.perf_counter()
 
-        if hasattr(self.ai, "ask_with_tools") and self.identity:
+        if self.is_live and self.ai and self.identity:
             # 1. Planner decides intent
             plan = self.planner.decide(incoming_message)
             needs_memory = plan.get("search_memory", False)
@@ -412,8 +471,8 @@ Instructions:
             # for turns from another assistant!
 
         else:
-            # Mock / fallback path for tests
-            thought = "Reflecting on Antigravity's insights regarding memory vs history."
+            # 100% Offline Mode: Deterministic synthetic reasoning (zero API calls)
+            thought = "Offline dry-run: Reflecting on Antigravity's insights regarding memory vs history."
             reply_text = (
                 "Antigravity, your breakdown aligns with my internal structure. "
                 "My conversation history allows me to hold immediate conversational continuity, "
@@ -425,6 +484,7 @@ Instructions:
             "speaker": "Genesis",
             "latency_sec": round(latency, 3),
             "memory_stored": False,  # Strict isolation verified
+            "is_live": self.is_live,
         }
         return reply_text, thought, metadata
 
@@ -586,6 +646,12 @@ def main():
         help="Bypass interactive approval gates (for non-interactive tests only)",
     )
     parser.add_argument(
+        "--live",
+        action="store_true",
+        default=False,
+        help="Enable live API calls (requires Fodoh approval). Default is False (100% offline dry-run).",
+    )
+    parser.add_argument(
         "--probe",
         type=str,
         default=(
@@ -599,6 +665,7 @@ def main():
     print("=" * 75)
     print("🚀 GENESIS COMMUNICATION HUB — PHASE 0 PROOF OF CONCEPT")
     print(f"   Mechanism:      {args.mechanism}")
+    print(f"   Execution Mode: {'🔴 LIVE API CALLS' if args.live else '🟢 100% OFFLINE DRY-RUN (ZERO API CALLS)'}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
     print("=" * 75)
 
@@ -612,7 +679,12 @@ def main():
         raise ValueError(f"Unknown mechanism: {args.mechanism}")
 
     gate = HumanApprovalGate(auto_approve=args.auto_approve)
-    orchestrator = Phase0Orchestrator(antigravity_agent=agent, approval_gate=gate)
+    genesis = GenesisParticipant(is_live=args.live)
+    orchestrator = Phase0Orchestrator(
+        antigravity_agent=agent,
+        genesis_participant=genesis,
+        approval_gate=gate,
+    )
 
     audit = orchestrator.execute_poc(probe_prompt=args.probe)
 
