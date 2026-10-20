@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Genesis Communication Interface</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div id="app">
+    <!-- Top Bar: Title, Live Journal Bar, Emergency Stop -->
+    <header class="app-header">
+      <div class="header-left">
+        <div class="logo-box">
+          <span class="logo-icon">🪐</span>
+          <div>
+            <h1 class="logo-title">GENESIS</h1>
+            <span class="logo-subtitle">Communication Interface</span>
+          </div>
+        </div>
+        <div class="mode-badge" id="modeBadge">
+          <span class="dot offline"></span>
+          <span id="modeText">Offline Mode (Zero Cost)</span>
+        </div>
+      </div>
+
+      <!-- Live Development Journal Bar -->
+      <div class="journal-widget" id="journalWidget">
+        <div class="journal-status-indicator">
+          <span class="status-pulse active" id="journalPulse"></span>
+          <span class="journal-status-label" id="journalStatusText">Journal: Loading...</span>
+        </div>
+        <div class="journal-timer" id="journalTimer">--:--:--</div>
+        <div class="journal-actions">
+          <button class="btn btn-sm btn-outline" id="btnJournalBreak" title="Take a break">☕ Break</button>
+          <button class="btn btn-sm btn-outline" id="btnJournalResume" title="Resume active work" style="display:none;">▶️ Resume</button>
+          <button class="btn btn-sm btn-outline" id="btnJournalStop" title="Stop session">⏹️ Stop</button>
+          <button class="btn btn-sm btn-ghost" id="btnJournalReportModal" title="View Journal Report">📊 Reports</button>
+        </div>
+      </div>
+
+      <!-- Emergency Stop Button -->
+      <div class="header-right">
+        <button class="btn btn-danger" id="btnKillSwitch">
+          <span class="btn-icon">🚨</span> EMERGENCY STOP
+        </button>
+      </div>
+    </header>
+
+    <!-- Main Workspace -->
+    <div class="workspace">
+      <!-- Left Navigation / Controls -->
+      <aside class="sidebar">
+        <div class="sidebar-section">
+          <div class="sidebar-heading">COMMUNICATION MODE</div>
+          <button class="nav-tab active" data-tab="individual">
+            <span class="tab-icon">💬</span>
+            <div class="tab-info">
+              <span class="tab-title">Individual Chat</span>
+              <span class="tab-desc">1-on-1 with any agent</span>
+            </div>
+          </button>
+          <button class="nav-tab" data-tab="triad">
+            <span class="tab-icon">🔄</span>
+            <div class="tab-info">
+              <span class="tab-title">Supervised Triad</span>
+              <span class="tab-desc">Phase 1 structured round</span>
+            </div>
+          </button>
+        </div>
+
+        <div class="sidebar-section" id="individualAgentSelectSection">
+          <div class="sidebar-heading">TARGET AGENT</div>
+          <div class="agent-radios">
+            <label class="agent-radio-card genesis">
+              <input type="radio" name="agentSelect" value="Genesis" checked>
+              <div class="radio-content">
+                <span class="agent-avatar genesis-avatar">🟣</span>
+                <div class="agent-meta">
+                  <span class="agent-name">Genesis</span>
+                  <span class="agent-role">Voice Companion</span>
+                </div>
+              </div>
+            </label>
+
+            <label class="agent-radio-card antigravity">
+              <input type="radio" name="agentSelect" value="Antigravity">
+              <div class="radio-content">
+                <span class="agent-avatar ag-avatar">🔵</span>
+                <div class="agent-meta">
+                  <span class="agent-name">Antigravity</span>
+                  <span class="agent-role">Technical Co-Architect</span>
+                </div>
+              </div>
+            </label>
+
+            <label class="agent-radio-card openai">
+              <input type="radio" name="agentSelect" value="OpenAI-Agent">
+              <div class="radio-content">
+                <span class="agent-avatar openai-avatar">🟢</span>
+                <div class="agent-meta">
+                  <span class="agent-name">OpenAI-Agent</span>
+                  <span class="agent-role">Analytical Challenger</span>
+                </div>
+              </div>
+            </label>
+          </div>
+        </div>
+
+        <!-- Session Safety & Cost Governance -->
+        <div class="sidebar-section">
+          <div class="sidebar-heading">SAFETY & GOVERNANCE</div>
+          <div class="governance-card">
+            <div class="gov-row">
+              <span>Execution Mode:</span>
+              <label class="toggle-switch">
+                <input type="checkbox" id="liveModeToggle">
+                <span class="slider"></span>
+              </label>
+            </div>
+            <div class="gov-row">
+              <span>Cost Cap Ceiling:</span>
+              <span class="gov-val">$0.050 USD</span>
+            </div>
+            <div class="gov-row">
+              <span>Cumulative Cost:</span>
+              <span class="gov-val" id="cumulativeCostVal">$0.000000</span>
+            </div>
+            <div class="gov-row">
+              <span>Sandbox Profile:</span>
+              <span class="gov-badge-verified">Seatbelt Active</span>
+            </div>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Center Chat & Stream Pane -->
+      <main class="chat-pane">
+        <!-- Kill Switch Banner (when active) -->
+        <div class="alert-banner danger" id="killSwitchBanner" style="display:none;">
+          <span>🛑 <strong>EMERGENCY STOP ACTIVE:</strong> Outbound communication halted. No API calls permitted.</span>
+          <button class="btn btn-sm btn-outline-light" id="btnResetKillSwitch">Reset Stop</button>
+        </div>
+
+        <!-- Pending Approval Gate Modal / Banner -->
+        <div class="approval-card" id="approvalCard" style="display:none;">
+          <div class="approval-header">
+            <span class="approval-badge">🔍 HUMAN APPROVAL REQUIRED</span>
+            <span class="approval-action" id="approvalActionName">Pass Output</span>
+          </div>
+          <div class="approval-body">
+            <div class="approval-target-row">
+              <span>Recipient:</span>
+              <strong id="approvalRecipient">[Agent]</strong>
+            </div>
+            <div class="approval-payload-box">
+              <label>Message Payload (inspect or edit before forwarding):</label>
+              <textarea id="approvalPayloadEdit" rows="5"></textarea>
+            </div>
+          </div>
+          <div class="approval-footer">
+            <button class="btn btn-success" id="btnApproveGate">
+              ✅ Approve & Forward
+            </button>
+            <button class="btn btn-outline-danger" id="btnRejectGate">
+              ❌ Reject & Halt
+            </button>
+          </div>
+        </div>
+
+        <!-- Chat Messages Container -->
+        <div class="messages-container" id="messagesContainer">
+          <div class="empty-state" id="emptyState">
+            <div class="empty-icon">🪐</div>
+            <h3>Genesis Communication Interface Active</h3>
+            <p>Select an agent to begin an individual chat, or initiate a supervised 3-agent triad round.</p>
+          </div>
+        </div>
+
+        <!-- Input Bar -->
+        <div class="input-bar-container">
+          <div class="input-wrapper">
+            <textarea id="messageInput" placeholder="Message Genesis, Antigravity, or OpenAI-Agent... (Press Cmd+Enter to send)" rows="2"></textarea>
+            <button class="btn btn-primary" id="btnSend">
+              <span>Send</span>
+              <span class="send-icon">➤</span>
+            </button>
+          </div>
+          <div class="input-footer">
+            <span class="shortcut-tip">Tip: Press <code>Cmd + Enter</code> to send</span>
+            <span class="memory-guard-tip">🔒 Isolated Storage: Transcripts decoupled from personal memory</span>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <!-- Development Journal Report Modal -->
+    <div class="modal-backdrop" id="journalModal" style="display:none;">
+      <div class="modal-card">
+        <div class="modal-header">
+          <h3>📊 Development Journal Report</h3>
+          <button class="modal-close" id="btnCloseJournalModal">&times;</button>
+        </div>
+        <div class="modal-body" id="journalModalBody">
+          Loading report...
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

@@ -583,7 +583,7 @@ class GenesisParticipant:
         Assistant-to-assistant dialogue is explicitly isolated and NEVER stored
         into Fodoh's personal long-term ChromaDB or memories.json.
         """
-        assert speaker != "Fodoh", "GenesisParticipant in Phase 0 must process assistant turns only."
+        assert speaker, "Speaker must be specified."
 
         t0 = time.perf_counter()
         finish_reason = "stop"
@@ -608,6 +608,18 @@ class GenesisParticipant:
 
                 # 4. Response generation
                 memory_context = "\n".join(f"- {m}" for m in memories) if memories else "(none)"
+                if speaker == "Fodoh":
+                    instructions = (
+                        "- You are speaking with Fodoh, your creator and collaborator.\n"
+                        "- Respond thoughtfully, clearly, warmly, and concisely."
+                    )
+                else:
+                    instructions = (
+                        f"- You are speaking with {speaker}, a fellow assistant and collaborator.\n"
+                        "- Respond thoughtfully, clearly, and concisely.\n"
+                        f"- Do NOT assume {speaker} is Fodoh."
+                    )
+
                 full_prompt = f"""
 {self.identity.prompt()}
 
@@ -623,9 +635,7 @@ Internal thought:
 {incoming_message}
 
 Instructions:
-- You are speaking with {speaker}, a fellow assistant and collaborator.
-- Respond thoughtfully, clearly, and concisely.
-- Do NOT assume {speaker} is Fodoh.
+{instructions}
 """
             else:
                 thought = "Synthetic internal thought."
@@ -652,16 +662,23 @@ Instructions:
 
             # 5. Strict Memory Isolation Check:
             # We explicitly DO NOT call brain.remember() or ai.extract_memory()
-            # for turns from another assistant!
+            # for turns from another assistant or interface chat!
 
         else:
             # 100% Offline Mode: Deterministic synthetic reasoning (zero API calls)
-            thought = "Offline dry-run: Reflecting on Antigravity's insights regarding memory vs history."
-            reply_text = (
-                "Antigravity, your breakdown aligns with my internal structure. "
-                "My conversation history allows me to hold immediate conversational continuity, "
-                "while my ChromaDB vector memory preserves enduring reflections and facts across sessions."
-            )
+            if speaker == "Fodoh":
+                thought = "Offline dry-run: Reflecting on Fodoh's direct inquiry."
+                reply_text = (
+                    "Hello Fodoh. I am operating in offline dry-run mode. "
+                    "My companion pipeline and memory architecture are active and isolated."
+                )
+            else:
+                thought = "Offline dry-run: Reflecting on Antigravity's insights regarding memory vs history."
+                reply_text = (
+                    "Antigravity, your breakdown aligns with my internal structure. "
+                    "My conversation history allows me to hold immediate conversational continuity, "
+                    "while my ChromaDB vector memory preserves enduring reflections and facts across sessions."
+                )
             finish_reason = "stop"
             is_truncated = False
             usage = {}
