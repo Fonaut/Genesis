@@ -8,15 +8,15 @@ from dotenv import load_dotenv
 load_dotenv()
 client = OpenAI()
 
-# Configurable parameters (defaults preserve exact baseline behavior)
-SAMPLE_RATE = int(os.getenv("GENESIS_SAMPLE_RATE", "44100"))
+# Configurable parameters (16 kHz unifies mic capture with OpenWakeWord & reduces payload by 62%)
+SAMPLE_RATE = int(os.getenv("GENESIS_SAMPLE_RATE", "16000"))
 CHANNELS = 1
 INPUT_FILE = "input.wav"
 OUTPUT_FILE = "output.mp3"
 
-# Tuning knobs (easily configurable and reversible)
+# Tuning knobs (1.0s balances responsiveness with conversational hesitation tolerance)
 SILENCE_THRESHOLD = float(os.getenv("GENESIS_SILENCE_THRESHOLD", "0.015"))   # how quiet = "silent"
-SILENCE_DURATION = float(os.getenv("GENESIS_SILENCE_DURATION", "1.5"))       # seconds of silence before stopping
+SILENCE_DURATION = float(os.getenv("GENESIS_SILENCE_DURATION", "1.0"))       # seconds of silence before stopping
 MAX_DURATION = int(os.getenv("GENESIS_MAX_DURATION", "30"))                  # hard cutoff (safety net)
 
 
