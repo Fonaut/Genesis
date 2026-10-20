@@ -283,6 +283,38 @@ class TestCommunicationInterface(unittest.TestCase):
             mem_content = memories_file.read_text()
             self.assertNotIn("Testing conversation history isolation", mem_content)
 
+    # -------------------------------------------------------------------------
+    # 7. Startup Initialization & CLI Regression Tests
+    # -------------------------------------------------------------------------
+
+    def test_server_run_startup_routine(self):
+        """Regression test: verify run() initializes cleanly without NameError (e.g. PROJECT_ROOT)."""
+        from interface.server import run
+        with patch("uvicorn.run") as mock_uvicorn:
+            run(host="127.0.0.1", port=8765)
+            self.assertTrue(mock_uvicorn.called)
+            _, kwargs = mock_uvicorn.call_args
+            self.assertEqual(kwargs.get("host"), "127.0.0.1")
+            self.assertEqual(kwargs.get("port"), 8765)
+
+    def test_server_module_invocation_subprocess(self):
+        """Regression test: verify python -m interface.server starts up in subprocess without error."""
+        import subprocess
+        import sys
+        res = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from unittest.mock import patch; import uvicorn; patch('uvicorn.run').start(); import runpy; runpy.run_module('interface.server', run_name='__main__')",
+            ],
+            capture_output=True,
+            text=True,
+        )
+        self.assertEqual(res.returncode, 0, f"Server startup failed:\n{res.stderr}")
+        self.assertIn("GENESIS COMMUNICATION INTERFACE", res.stdout)
+        self.assertIn("Kill Switch:", res.stdout)
+        self.assertNotIn("NameError", res.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()

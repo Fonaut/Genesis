@@ -5,8 +5,14 @@ Integrates the Communication Hub, approval gates, kill switch, and Development J
 """
 
 import os
+import sys
 from pathlib import Path
 from typing import Dict, Any, Optional
+
+CURRENT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = CURRENT_DIR.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -24,7 +30,6 @@ from interface.models import (
 from hub.phase0 import HubSafetyError, KillSwitchActiveError
 from hub.phase1 import CostLimitExceededError
 
-CURRENT_DIR = Path(__file__).resolve().parent
 STATIC_DIR = CURRENT_DIR / "static"
 INDEX_HTML = STATIC_DIR / "index.html"
 
@@ -255,13 +260,14 @@ async def get_conversation_history():
 def run(host: str = "127.0.0.1", port: int = 8765):
     """Launches the Genesis Communication Interface web server."""
     import uvicorn
-    print("=" * 75)
-    print("🚀 GENESIS COMMUNICATION INTERFACE")
-    print(f"   Local URL:    http://{host}:{port}")
-    print(f"   Binding:      {host} (Localhost Only)")
-    print(f"   Storage:      logs/interface/ & logs/journal/")
-    print(f"   Kill Switch:  Active ({'.hub_stopped' if (PROJECT_ROOT / '.hub_stopped').exists() else 'Ready'})")
-    print("=" * 75)
+    kill_switch_state = "TRIGGERED (.hub_stopped present)" if (PROJECT_ROOT / ".hub_stopped").exists() else "Ready (Inactive)"
+    print("=" * 75, flush=True)
+    print("🚀 GENESIS COMMUNICATION INTERFACE", flush=True)
+    print(f"   Local URL:    http://{host}:{port}", flush=True)
+    print(f"   Binding:      {host} (Localhost Only)", flush=True)
+    print(f"   Storage:      logs/interface/ & logs/journal/", flush=True)
+    print(f"   Kill Switch:  {kill_switch_state}", flush=True)
+    print("=" * 75, flush=True)
     uvicorn.run(app, host=host, port=port, log_level="info")
 
 
