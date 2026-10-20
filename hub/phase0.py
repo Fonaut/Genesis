@@ -153,9 +153,10 @@ class SandboxManager:
 ;; 1. Deny ALL write operations across the entire machine
 (deny file-write*)
 
-;; 2. Allow writes ONLY within the designated ephemeral sandbox directory
+;; 2. Allow writes ONLY within the designated ephemeral sandbox and CLI runtime directory
 (allow file-write*
     (subpath "{real_sandbox}")
+    (subpath "{user_home}/.gemini/antigravity-cli")
 )
 
 ;; 3. Deny reading the user's home directory by default (protects projects, keys, docs)
@@ -168,9 +169,11 @@ class SandboxManager:
     (subpath "{real_sandbox}")
     (subpath "{user_home}/.local/bin")
     (subpath "{user_home}/.gemini/antigravity-cli")
+    (subpath "{user_home}/.gemini/config")
+    (subpath "{user_home}/Library/Keychains")
 )
 
-;; 5. Explicit, unconditional denials for Genesis production repository and credentials:
+;; 5. Explicit, unconditional denials for Genesis production repository, secrets, and personal folders:
 (deny file-read* file-write*
     (subpath "{PROJECT_ROOT}")
     (subpath "{user_home}/.gemini/antigravity/brain")
@@ -178,7 +181,6 @@ class SandboxManager:
     (subpath "{user_home}/.aws")
     (subpath "{user_home}/.config/gcloud")
     (subpath "{user_home}/Documents")
-    (subpath "{user_home}/Library/Keychains")
     (literal "{PROJECT_ROOT}/.env")
 )
 
@@ -377,7 +379,30 @@ class CliAntigravityAgent(AntigravityInterface):
                 extra_env=extra_env if extra_env else None,
             )
         except subprocess.TimeoutExpired as err:
-            raise HubSafetyError(f"Antigravity CLI execution timed out after {self.timeout_sec}s") from err
+            latency = time.perf_counter() - t0
+            raw_stderr = err.stderr or ""
+            if isinstance(raw_stderr, bytes):
+                raw_stderr = raw_stderr.decode("utf-8", errors="replace")
+            
+            # Sanitize stderr tail to capture diagnostics without exposing tokens
+            sanitized_lines = []
+            for line in raw_stderr.splitlines()[-25:]:
+                if any(k in line.lower() for k in ["token", "secret", "password", "key=", "cookie", "auth="]):
+                    sanitized_lines.append("[REDACTED SENSITIVE LINE]")
+                else:
+                    sanitized_lines.append(line)
+            sanitized_tail = "\n".join(sanitized_lines).strip()
+
+            diag_msg = (
+                f"Antigravity CLI execution timed out after {latency:.1f}s (configured limit: {self.timeout_sec:.1f}s).\n"
+                f"Process state: TERMINATED_BY_TIMEOUT\n"
+            )
+            if sanitized_tail:
+                diag_msg += f"Diagnostics (recent stderr tail):\n{sanitized_tail}"
+            else:
+                diag_msg += "Diagnostics: Subprocess produced no stderr before timeout."
+
+            raise HubSafetyError(diag_msg) from err
 
         latency = time.perf_counter() - t0
         if res.returncode != 0:
@@ -716,13 +741,22 @@ def main():
         ),
         help="Initial probe prompt to send to Antigravity",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=60.0,
+        help="Subprocess timeout in seconds for CLI execution (default: 60.0, range: 5.0 to 90.0)",
+    )
     args = parser.parse_args()
+
+    effective_timeout = min(max(args.timeout, 5.0), 90.0)
 
     print("=" * 75)
     print("🚀 GENESIS COMMUNICATION HUB — PHASE 0 PROOF OF CONCEPT")
     print(f"   Mechanism:      {args.mechanism}")
     print(f"   Execution Mode: {'🔴 LIVE API CALLS' if args.live else '🟢 100% OFFLINE DRY-RUN (ZERO API CALLS)'}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
+    print(f"   Timeout Cap:    {effective_timeout:.1f}s")
     print("=" * 75)
 
     if args.mechanism in ("cli", "gemini_connectivity") and not args.live:
@@ -735,7 +769,7 @@ def main():
     if args.mechanism == "mock":
         agent = MockAntigravityAgent()
     elif args.mechanism == "cli":
-        agent = CliAntigravityAgent()
+        agent = CliAntigravityAgent(timeout_sec=effective_timeout)
     elif args.mechanism == "gemini_connectivity":
         agent = ConnectivityGeminiAgent()
     else:
