@@ -345,6 +345,35 @@ class TestPhase0HubEngine(unittest.TestCase):
         finally:
             sandbox.cleanup()
 
+    # -------------------------------------------------------------------------
+    # 11. Phase 0A Probe-Only Isolation Test
+    # -------------------------------------------------------------------------
+    def test_probe_only_mode_completes_without_invoking_genesis(self):
+        """
+        REGRESSION TEST: Confirms that probe_only=True completes after Turn 1,
+        never invokes Genesis, and never triggers Gate 2 approval.
+        """
+        mock_agent = MockAntigravityAgent(response_text="Antigravity receipt confirmed.")
+        gate = HumanApprovalGate(auto_approve=True)
+
+        mock_genesis = MagicMock(spec=GenesisParticipant)
+        orchestrator = Phase0Orchestrator(
+            antigravity_agent=mock_agent,
+            genesis_participant=mock_genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        audit = orchestrator.execute_poc(probe_prompt="Hello Antigravity", probe_only=True)
+
+        self.assertEqual(audit.status, "PROBE_COMPLETED")
+        self.assertEqual(len(audit.turns), 1)
+        self.assertEqual(audit.turns[0].speaker, "Antigravity")
+        self.assertIn("receipt confirmed", audit.turns[0].content)
+
+        # Verify Genesis was NEVER invoked
+        mock_genesis.process_turn.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

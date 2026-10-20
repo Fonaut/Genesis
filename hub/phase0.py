@@ -364,6 +364,7 @@ class CliAntigravityAgent(AntigravityInterface):
             "-p", prompt,
             "--output-format", "json",
             "--disable-slash-commands",
+            "--mode", "plan",
         ]
 
         # Strict Subscription Sign-In: Do NOT inject GEMINI_API_KEY into CLI environment.
@@ -598,6 +599,7 @@ class Phase0Orchestrator:
             "Antigravity, as co-architect, how would you describe the difference between "
             "Genesis's short-term conversation history and its long-term ChromaDB vector memory?"
         ),
+        probe_only: bool = False,
     ) -> SessionAudit:
         """Executes the supervised 1-turn exchange."""
         session_id = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
@@ -645,6 +647,16 @@ class Phase0Orchestrator:
                 metadata=ag_meta,
             )
             audit.turns.append(turn_1)
+
+            # If running Phase 0A (probe-only), finish immediately without invoking Genesis
+            if probe_only:
+                audit.status = "PROBE_COMPLETED"
+                print("\n" + "=" * 75)
+                print("🟢 PHASE 0A STANDALONE CONNECTIVITY PROBE COMPLETED")
+                print("   Antigravity response received successfully.")
+                print("   Genesis was NOT invoked. No approval or message was passed to Genesis.")
+                print("=" * 75)
+                return audit
 
             # -----------------------------------------------------------------
             # Step 3: Human Approval to Pass Antigravity Output to Genesis
@@ -747,6 +759,12 @@ def main():
         default=60.0,
         help="Subprocess timeout in seconds for CLI execution (default: 60.0, range: 5.0 to 90.0)",
     )
+    parser.add_argument(
+        "--probe-only",
+        action="store_true",
+        default=False,
+        help="Run only the standalone Antigravity probe (Phase 0A). Does NOT invoke Genesis or prompt Gate 2.",
+    )
     args = parser.parse_args()
 
     effective_timeout = min(max(args.timeout, 5.0), 90.0)
@@ -754,7 +772,10 @@ def main():
     print("=" * 75)
     print("🚀 GENESIS COMMUNICATION HUB — PHASE 0 PROOF OF CONCEPT")
     print(f"   Mechanism:      {args.mechanism}")
-    print(f"   Execution Mode: {'🔴 LIVE API CALLS' if args.live else '🟢 100% OFFLINE DRY-RUN (ZERO API CALLS)'}")
+    mode_str = "🔴 LIVE API CALLS" if args.live else "🟢 100% OFFLINE DRY-RUN (ZERO API CALLS)"
+    if args.probe_only:
+        mode_str += " [PROBE ONLY — GENESIS IDLE]"
+    print(f"   Execution Mode: {mode_str}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
     print(f"   Timeout Cap:    {effective_timeout:.1f}s")
     print("=" * 75)
@@ -776,14 +797,14 @@ def main():
         raise ValueError(f"Unknown mechanism: {args.mechanism}")
 
     gate = HumanApprovalGate(auto_approve=args.auto_approve)
-    genesis = GenesisParticipant(is_live=args.live)
+    genesis = GenesisParticipant(is_live=args.live and not args.probe_only)
     orchestrator = Phase0Orchestrator(
         antigravity_agent=agent,
         genesis_participant=genesis,
         approval_gate=gate,
     )
 
-    audit = orchestrator.execute_poc(probe_prompt=args.probe)
+    audit = orchestrator.execute_poc(probe_prompt=args.probe, probe_only=args.probe_only)
 
     print("\n" + "=" * 75)
     print(f"🏁 SESSION SUMMARY: {audit.status}")
