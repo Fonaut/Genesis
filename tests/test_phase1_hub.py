@@ -389,6 +389,140 @@ class TestPhase1ThreeAgentHub(unittest.TestCase):
         self.assertIn("empty or whitespace-only", str(ctx.exception))
         genesis.process_turn.assert_not_called()
 
+    def test_genesis_empty_reply_halts_and_fails_session(self):
+        """When Genesis returns an empty reply, exchange halts with FAILED."""
+        ag_agent = MockAntigravityAgent(response_text="Valid Antigravity text.")
+        openai_agent = OpenAIAgentParticipant(is_live=False, mock_response="Valid OpenAI-Agent analysis.")
+        mock_genesis = MagicMock(spec=GenesisParticipant)
+        mock_genesis.process_turn.return_value = ("   ", None, {"speaker": "Genesis", "model": "gpt-4o-mini", "cost_usd_est": 0.0})
+        gate = HumanApprovalGate(auto_approve=True)
+
+        orchestrator = Phase1Orchestrator(
+            antigravity_agent=ag_agent,
+            openai_agent=openai_agent,
+            genesis_participant=mock_genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        with self.assertRaises(HubSafetyError) as ctx:
+            orchestrator.execute_triad_poc(probe_prompt="Test probe")
+
+        self.assertIn("empty or whitespace-only", str(ctx.exception))
+        log_files = list(self.log_dir.glob("phase1_*.json"))
+        self.assertEqual(len(log_files), 1)
+        audit_data = json.loads(log_files[0].read_text())
+        self.assertEqual(audit_data["status"], "FAILED")
+
+    def test_genesis_truncation_detection_and_safeguard(self):
+        """When Genesis response hits output token limit (finish_reason='length'), session is marked FAILED."""
+        ag_agent = MockAntigravityAgent(response_text="Valid Antigravity text.")
+        openai_agent = OpenAIAgentParticipant(is_live=False, mock_response="Valid OpenAI-Agent analysis.")
+        mock_genesis = MagicMock(spec=GenesisParticipant)
+        mock_genesis.process_turn.return_value = (
+            "This practice reinforces continuity and prepares us well for future",
+            None,
+            {
+                "speaker": "Genesis",
+                "model": "gpt-4o-mini",
+                "finish_reason": "length",
+                "is_truncated": True,
+                "max_tokens": 800,
+                "cost_usd_est": 0.0005,
+            },
+        )
+        gate = HumanApprovalGate(auto_approve=True)
+
+        orchestrator = Phase1Orchestrator(
+            antigravity_agent=ag_agent,
+            openai_agent=openai_agent,
+            genesis_participant=mock_genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        with self.assertRaises(HubSafetyError) as ctx:
+            orchestrator.execute_triad_poc(probe_prompt="Test probe")
+
+        self.assertIn("truncated by output token limit", str(ctx.exception))
+        self.assertIn("finish_reason='length'", str(ctx.exception))
+
+        log_files = list(self.log_dir.glob("phase1_*.json"))
+        self.assertEqual(len(log_files), 1)
+        audit_data = json.loads(log_files[0].read_text())
+        self.assertEqual(audit_data["status"], "FAILED")
+        self.assertIn("truncated by output token limit", audit_data["error_message"])
+
+    def test_genesis_normal_completion_metadata(self):
+        """When Genesis completes cleanly (finish_reason='stop'), session is marked COMPLETED with metadata."""
+        ag_agent = MockAntigravityAgent(response_text="Valid Antigravity text.")
+        openai_agent = OpenAIAgentParticipant(is_live=False, mock_response="Valid OpenAI-Agent analysis.")
+        mock_genesis = MagicMock(spec=GenesisParticipant)
+        mock_genesis.process_turn.return_value = (
+            "This practice reinforces continuity and prepares us well for future collaboration across our triad.",
+            None,
+            {
+                "speaker": "Genesis",
+                "model": "gpt-4o-mini",
+                "finish_reason": "stop",
+                "is_truncated": False,
+                "max_tokens": 800,
+                "prompt_tokens": 1050,
+                "completion_tokens": 420,
+                "total_tokens": 1470,
+                "cost_usd_est": 0.00041,
+            },
+        )
+        gate = HumanApprovalGate(auto_approve=True)
+
+        orchestrator = Phase1Orchestrator(
+            antigravity_agent=ag_agent,
+            openai_agent=openai_agent,
+            genesis_participant=mock_genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        audit = orchestrator.execute_triad_poc(probe_prompt="Test probe")
+        self.assertEqual(audit.status, "COMPLETED")
+        self.assertEqual(len(audit.turns), 3)
+
+        gen_turn = audit.turns[2]
+        self.assertEqual(gen_turn.speaker, "Genesis")
+        self.assertEqual(gen_turn.metadata["finish_reason"], "stop")
+        self.assertFalse(gen_turn.metadata["is_truncated"])
+        self.assertEqual(gen_turn.metadata["max_tokens"], 800)
+        self.assertEqual(gen_turn.metadata["prompt_tokens"], 1050)
+        self.assertEqual(gen_turn.metadata["completion_tokens"], 420)
+
+    def test_llm_ask_with_tools_truncation_details(self):
+        """LLM.ask_with_tools accurately returns finish_reason and is_truncated details."""
+        from core.llm import LLM
+        mock_client = MagicMock()
+        mock_completion = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Truncated text..."
+        mock_choice.message.tool_calls = None
+        mock_choice.finish_reason = "length"
+        mock_completion.choices = [mock_choice]
+        mock_completion.usage.prompt_tokens = 50
+        mock_completion.usage.completion_tokens = 250
+        mock_completion.usage.total_tokens = 300
+        mock_client.chat.completions.create.return_value = mock_completion
+
+        with patch("core.llm.client", mock_client):
+            llm = LLM()
+            # return_details=False -> string only (backward compat)
+            res_str = llm.ask_with_tools("Hello", return_details=False)
+            self.assertEqual(res_str, "Truncated text...")
+
+            # return_details=True -> tuple with metadata
+            content, details = llm.ask_with_tools("Hello", return_details=True)
+            self.assertEqual(content, "Truncated text...")
+            self.assertEqual(details["finish_reason"], "length")
+            self.assertTrue(details["is_truncated"])
+            self.assertEqual(details["usage"]["completion_tokens"], 250)
+
     # -------------------------------------------------------------------------
     # 5. Safety Governor & Ceilings
     # -------------------------------------------------------------------------

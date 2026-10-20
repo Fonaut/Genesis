@@ -460,6 +460,17 @@ class Phase1Orchestrator:
                 print(f"\n🛑 TURN 3 FAILED: {err_msg}")
                 raise HubSafetyError(err_msg)
 
+            if gen_meta.get("is_truncated") or gen_meta.get("finish_reason") == "length":
+                err_msg = (
+                    f"Genesis response was truncated by output token limit (finish_reason='length', "
+                    f"max_tokens={gen_meta.get('max_tokens', 800)}). Cut-off text: '{gen_reply[-60:]}...'. "
+                    "Halting and reporting session as failed to prevent accepting a truncated reply."
+                )
+                audit.status = "FAILED"
+                audit.error_message = err_msg
+                print(f"\n🛑 TURN 3 TRUNCATED: {err_msg}")
+                raise HubSafetyError(err_msg)
+
             gen_cost = gen_meta.get("cost_usd_est", 0.0)
             self.governor.cumulative_cost_usd += gen_cost
             if self.governor.cumulative_cost_usd > self.governor.max_cost_usd:
@@ -576,10 +587,17 @@ def main():
         default=800,
         help="Maximum output tokens for OpenAI-Agent (default: 800, range: 100 to 2000)",
     )
+    parser.add_argument(
+        "--genesis-max-tokens",
+        type=int,
+        default=800,
+        help="Maximum output tokens for Genesis (default: 800, range: 100 to 2000)",
+    )
     args = parser.parse_args()
 
     effective_timeout = min(max(args.timeout, 5.0), 90.0)
     effective_openai_tokens = min(max(args.openai_max_tokens, 100), 2000)
+    effective_genesis_tokens = min(max(args.genesis_max_tokens, 100), 2000)
 
     # Ingestion of user-approved ChatGPT summary briefing
     briefing_context = args.chatgpt_summary
@@ -598,6 +616,7 @@ def main():
     print(f"   Execution Mode: {mode_str}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
     print(f"   OpenAI Output:  {effective_openai_tokens} max tokens")
+    print(f"   Genesis Output: {effective_genesis_tokens} max tokens")
     print(f"   Cost Ceiling:   ${args.max_cost:.4f} USD")
     print(f"   Timeout Cap:    {effective_timeout:.1f}s")
     if briefing_context:
@@ -619,7 +638,7 @@ def main():
         raise ValueError(f"Unknown mechanism: {args.mechanism}")
 
     openai_agent = OpenAIAgentParticipant(is_live=args.live, max_tokens=effective_openai_tokens)
-    genesis = GenesisParticipant(is_live=args.live)
+    genesis = GenesisParticipant(is_live=args.live, max_tokens=effective_genesis_tokens)
     gate = HumanApprovalGate(auto_approve=args.auto_approve)
     governor = SafetyGovernor(max_turns=3, max_cost_usd=args.max_cost)
 

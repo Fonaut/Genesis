@@ -543,8 +543,9 @@ class ConnectivityGeminiAgent(AntigravityInterface):
 class GenesisParticipant:
     """Wraps Genesis's conversational pipeline with strict memory isolation."""
 
-    def __init__(self, is_live: bool = False, mock_llm: Optional[Any] = None):
+    def __init__(self, is_live: bool = False, mock_llm: Optional[Any] = None, max_tokens: int = 800):
         self.is_live = is_live
+        self.max_tokens = max_tokens
         if mock_llm:
             self.ai = mock_llm
             self.identity = None
@@ -585,25 +586,29 @@ class GenesisParticipant:
         assert speaker != "Fodoh", "GenesisParticipant in Phase 0 must process assistant turns only."
 
         t0 = time.perf_counter()
+        finish_reason = "stop"
+        is_truncated = False
+        usage = {}
 
-        if self.is_live and self.ai and self.identity:
-            # 1. Planner decides intent
-            plan = self.planner.decide(incoming_message)
-            needs_memory = plan.get("search_memory", False)
+        if self.is_live and self.ai:
+            if self.identity and self.planner and self.brain:
+                # 1. Planner decides intent
+                plan = self.planner.decide(incoming_message)
+                needs_memory = plan.get("search_memory", False)
 
-            # 2. Vector recall (reads relevant context if needed, but writes nothing)
-            memories = self.brain.recall(incoming_message) if needs_memory else []
+                # 2. Vector recall (reads relevant context if needed, but writes nothing)
+                memories = self.brain.recall(incoming_message) if needs_memory else []
 
-            # 3. Private reasoning
-            thought = self.ai.think(
-                f"[{speaker}]: {incoming_message}",
-                memories,
-                formatted_history,
-            )
+                # 3. Private reasoning
+                thought = self.ai.think(
+                    f"[{speaker}]: {incoming_message}",
+                    memories,
+                    formatted_history,
+                )
 
-            # 4. Response generation
-            memory_context = "\n".join(f"- {m}" for m in memories) if memories else "(none)"
-            full_prompt = f"""
+                # 4. Response generation
+                memory_context = "\n".join(f"- {m}" for m in memories) if memories else "(none)"
+                full_prompt = f"""
 {self.identity.prompt()}
 
 {self.capability_prompt}
@@ -622,7 +627,28 @@ Instructions:
 - Respond thoughtfully, clearly, and concisely.
 - Do NOT assume {speaker} is Fodoh.
 """
-            reply_text = self.ai.ask_with_tools(full_prompt)
+            else:
+                thought = "Synthetic internal thought."
+                full_prompt = incoming_message
+
+            try:
+                raw_reply = self.ai.ask_with_tools(
+                    full_prompt,
+                    max_tokens=self.max_tokens,
+                    return_details=True,
+                )
+            except TypeError:
+                raw_reply = self.ai.ask_with_tools(full_prompt)
+
+            if isinstance(raw_reply, tuple):
+                reply_text, details = raw_reply
+                finish_reason = str(details.get("finish_reason", "stop"))
+                is_truncated = bool(details.get("is_truncated", finish_reason == "length"))
+                usage = details.get("usage", {})
+            else:
+                reply_text = str(raw_reply or "")
+                finish_reason = "stop"
+                is_truncated = False
 
             # 5. Strict Memory Isolation Check:
             # We explicitly DO NOT call brain.remember() or ai.extract_memory()
@@ -636,12 +662,22 @@ Instructions:
                 "My conversation history allows me to hold immediate conversational continuity, "
                 "while my ChromaDB vector memory preserves enduring reflections and facts across sessions."
             )
+            finish_reason = "stop"
+            is_truncated = False
+            usage = {}
 
         latency = time.perf_counter() - t0
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        total_tokens = usage.get("total_tokens")
+
         # gpt-4o-mini pricing: $0.15/1M input, $0.60/1M output
-        est_input_tokens = len(incoming_message) // 4 + 400  # prompt + system/identity overhead
-        est_output_tokens = len(reply_text) // 4 + (len(thought or "") // 4)
-        est_cost = (est_input_tokens * 0.00000015) + (est_output_tokens * 0.00000060) if self.is_live else 0.0
+        if prompt_tokens is not None and completion_tokens is not None and self.is_live:
+            est_cost = (prompt_tokens * 0.00000015) + (completion_tokens * 0.00000060)
+        else:
+            est_input_tokens = len(incoming_message) // 4 + 400  # prompt + system/identity overhead
+            est_output_tokens = len(reply_text) // 4 + (len(thought or "") // 4)
+            est_cost = (est_input_tokens * 0.00000015) + (est_output_tokens * 0.00000060) if self.is_live else 0.0
 
         metadata = {
             "speaker": "Genesis",
@@ -650,7 +686,15 @@ Instructions:
             "memory_stored": False,  # Strict isolation verified
             "is_live": self.is_live,
             "cost_usd_est": round(est_cost, 6),
+            "finish_reason": finish_reason,
+            "is_truncated": is_truncated,
+            "max_tokens": self.max_tokens,
         }
+        if prompt_tokens is not None:
+            metadata["prompt_tokens"] = prompt_tokens
+            metadata["completion_tokens"] = completion_tokens
+            metadata["total_tokens"] = total_tokens
+
         return reply_text, thought, metadata
 
 
@@ -780,6 +824,17 @@ class Phase0Orchestrator:
                 print(f"\n🛑 TURN 2 FAILED: {err_msg}")
                 raise HubSafetyError(err_msg)
 
+            if gen_meta.get("is_truncated") or gen_meta.get("finish_reason") == "length":
+                err_msg = (
+                    f"Genesis response was truncated by output token limit (finish_reason='length', "
+                    f"max_tokens={gen_meta.get('max_tokens', 800)}). Cut-off text: '{gen_reply[-60:]}...'. "
+                    "Halting and reporting session as failed to prevent accepting a truncated reply."
+                )
+                audit.status = "FAILED"
+                audit.error_message = err_msg
+                print(f"\n🛑 TURN 2 TRUNCATED: {err_msg}")
+                raise HubSafetyError(err_msg)
+
             turn_2 = AgentTurn(
                 turn_id=2,
                 speaker="Genesis",
@@ -870,9 +925,16 @@ def main():
         default=False,
         help="Run only the standalone Antigravity probe (Phase 0A). Does NOT invoke Genesis or prompt Gate 2.",
     )
+    parser.add_argument(
+        "--genesis-max-tokens",
+        type=int,
+        default=800,
+        help="Maximum output tokens for Genesis (default: 800, range: 100 to 2000)",
+    )
     args = parser.parse_args()
 
     effective_timeout = min(max(args.timeout, 5.0), 90.0)
+    effective_genesis_tokens = min(max(args.genesis_max_tokens, 100), 2000)
 
     print("=" * 75)
     print("🚀 GENESIS COMMUNICATION HUB — PHASE 0 PROOF OF CONCEPT")
@@ -882,6 +944,7 @@ def main():
         mode_str += " [PROBE ONLY — GENESIS IDLE]"
     print(f"   Execution Mode: {mode_str}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
+    print(f"   Genesis Output: {effective_genesis_tokens} max tokens")
     print(f"   Timeout Cap:    {effective_timeout:.1f}s")
     print("=" * 75)
 
@@ -902,7 +965,10 @@ def main():
         raise ValueError(f"Unknown mechanism: {args.mechanism}")
 
     gate = HumanApprovalGate(auto_approve=args.auto_approve)
-    genesis = GenesisParticipant(is_live=args.live and not args.probe_only)
+    genesis = GenesisParticipant(
+        is_live=args.live and not args.probe_only,
+        max_tokens=effective_genesis_tokens,
+    )
     orchestrator = Phase0Orchestrator(
         antigravity_agent=agent,
         genesis_participant=genesis,

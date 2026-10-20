@@ -13,18 +13,42 @@ class LLM:
     def __init__(self):
         self.model = "gpt-4o-mini"
 
-    def ask(self, prompt):
+    def ask(self, prompt, max_tokens: int = 800, return_details: bool = False):
         """Standard response generation (no tools)."""
         response = client.chat.completions.create(
             model=self.model,
             messages=[{"role": "user", "content": prompt}],
-            max_tokens=180,
+            max_tokens=max_tokens,
         )
-        return response.choices[0].message.content.strip()
+        choice = response.choices[0]
+        content = choice.message.content.strip() if choice.message.content else ""
+        finish_reason = choice.finish_reason
 
-    def ask_with_tools(self, prompt):
+        usage_info = {}
+        if hasattr(response, "usage") and response.usage:
+            usage_info = {
+                "prompt_tokens": getattr(response.usage, "prompt_tokens", 0),
+                "completion_tokens": getattr(response.usage, "completion_tokens", 0),
+                "total_tokens": getattr(response.usage, "total_tokens", 0),
+            }
+
+        if return_details:
+            return content, {
+                "finish_reason": finish_reason,
+                "is_truncated": (finish_reason == "length"),
+                "usage": usage_info,
+                "max_tokens": max_tokens,
+            }
+        return content
+
+    def ask_with_tools(self, prompt, max_tokens: int = 800, return_details: bool = False):
         """Response generation with tool-calling support."""
         messages = [{"role": "user", "content": prompt}]
+
+        cumulative_prompt_tokens = 0
+        cumulative_completion_tokens = 0
+        cumulative_total_tokens = 0
+        finish_reason = None
 
         while True:
             response = client.chat.completions.create(
@@ -32,13 +56,32 @@ class LLM:
                 messages=messages,
                 tools=TOOL_SCHEMAS,
                 tool_choice="auto",
-                max_tokens=250,
+                max_tokens=max_tokens,
             )
-            msg = response.choices[0].message
+            choice = response.choices[0]
+            msg = choice.message
+            finish_reason = choice.finish_reason
+
+            if hasattr(response, "usage") and response.usage:
+                cumulative_prompt_tokens += getattr(response.usage, "prompt_tokens", 0)
+                cumulative_completion_tokens += getattr(response.usage, "completion_tokens", 0)
+                cumulative_total_tokens += getattr(response.usage, "total_tokens", 0)
 
             # No tool calls? Return the final answer.
             if not msg.tool_calls:
-                return msg.content.strip() if msg.content else ""
+                content = msg.content.strip() if msg.content else ""
+                if return_details:
+                    return content, {
+                        "finish_reason": finish_reason,
+                        "is_truncated": (finish_reason == "length"),
+                        "usage": {
+                            "prompt_tokens": cumulative_prompt_tokens,
+                            "completion_tokens": cumulative_completion_tokens,
+                            "total_tokens": cumulative_total_tokens,
+                        },
+                        "max_tokens": max_tokens,
+                    }
+                return content
 
             # Otherwise, execute each requested tool
             messages.append(msg)

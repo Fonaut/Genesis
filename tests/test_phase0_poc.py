@@ -514,6 +514,32 @@ class TestPhase0HubEngine(unittest.TestCase):
         self.assertIsNone(audit_json["turns"][1]["thought"])
         self.assertTrue(len(audit_json["turns"][1]["content"]) > 0)
 
+    def test_phase0_genesis_truncation_detection(self):
+        """Phase 0 halts with FAILED if Genesis response is truncated by output limit."""
+        mock_agent = MockAntigravityAgent(response_text="Antigravity technical assessment.")
+        gate = HumanApprovalGate(auto_approve=True)
+        mock_genesis = MagicMock(spec=GenesisParticipant)
+        mock_genesis.process_turn.return_value = (
+            "Truncated Genesis reply...",
+            None,
+            {"speaker": "Genesis", "finish_reason": "length", "is_truncated": True, "max_tokens": 800},
+        )
+
+        orchestrator = Phase0Orchestrator(
+            antigravity_agent=mock_agent,
+            genesis_participant=mock_genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        with self.assertRaises(HubSafetyError) as ctx:
+            orchestrator.execute_poc(probe_prompt="Testing Phase 0 truncation")
+
+        self.assertIn("truncated by output token limit", str(ctx.exception))
+        log_files = list(self.log_dir.glob("phase0_*.json"))
+        audit_data = json.loads(log_files[0].read_text())
+        self.assertEqual(audit_data["status"], "FAILED")
+
 
 if __name__ == "__main__":
     unittest.main()
