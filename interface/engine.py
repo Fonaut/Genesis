@@ -288,8 +288,17 @@ class CommunicationInterfaceEngine:
             raise KillSwitchActiveError("Operation aborted: Emergency kill switch is active.")
 
         state = self.active_triad_session
-        if not state or not state.pending_gate:
-            raise HubSafetyError("No active triad session with a pending approval gate.")
+        if not state:
+            raise HubSafetyError("No active triad session.")
+
+        if state.status in ("CANCELLED_BY_USER", "COMPLETED", "FAILED"):
+            raise HubSafetyError(
+                f"Triad session '{state.session_id}' is already in terminal state '{state.status}'. "
+                "Cannot respond to gates or dispatch further turns."
+            )
+
+        if not state.pending_gate:
+            raise HubSafetyError("No pending approval gate for active triad session.")
 
         gate = state.pending_gate
         if gate.approval_id != approval_id:

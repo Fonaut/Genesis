@@ -46,6 +46,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const modeText = document.getElementById("modeText");
   const cumulativeCostVal = document.getElementById("cumulativeCostVal");
 
+  // Track rendered event IDs to ensure idempotent rendering across polls
+  const renderedEventIds = new Set();
+
   // Helper: Format seconds as Xh Ym Zs
   function formatSeconds(sec) {
     if (isNaN(sec) || sec < 0) sec = 0;
@@ -122,11 +125,24 @@ document.addEventListener("DOMContentLoaded", () => {
   // ---------------------------------------------------------------------------
   // 3. Message Rendering
   // ---------------------------------------------------------------------------
-  function appendMessage(sender, content, meta = {}) {
+  function appendMessage(sender, content, meta = {}, eventId = null) {
+    if (eventId) {
+      if (renderedEventIds.has(eventId)) {
+        return; // Idempotent: event already rendered
+      }
+      if (document.querySelector(`[data-event-id="${eventId}"]`)) {
+        renderedEventIds.add(eventId);
+        return; // Already present in DOM
+      }
+      renderedEventIds.add(eventId);
+    }
     if (emptyState) emptyState.style.display = "none";
 
     const card = document.createElement("div");
     card.className = `msg-card ${sender === "Fodoh" ? "user-msg" : "agent-msg"}`;
+    if (eventId) {
+      card.setAttribute("data-event-id", eventId);
+    }
 
     const header = document.createElement("div");
     header.className = "msg-header";
@@ -292,28 +308,58 @@ document.addEventListener("DOMContentLoaded", () => {
 
   function renderTriadState(state) {
     if (!state) return;
+
+    // 1. Render turns idempotently using stable event IDs
     if (state.turns && state.turns.length > 0) {
-      const lastTurn = state.turns[state.turns.length - 1];
-      // Only append if not already last message
-      appendMessage(lastTurn.speaker, lastTurn.content, {
-        model: lastTurn.model,
-        latency_sec: lastTurn.latency_sec,
-        cost_usd_est: lastTurn.cost_usd_est,
+      state.turns.forEach((turn, idx) => {
+        const turnId = turn.turn_id !== undefined ? turn.turn_id : idx + 1;
+        const turnEventId = `triad_${state.session_id}_turn_${turnId}`;
+        appendMessage(
+          turn.speaker,
+          turn.content,
+          {
+            model: turn.model,
+            latency_sec: turn.latency_sec,
+            cost_usd_est: turn.cost_usd_est,
+          },
+          turnEventId
+        );
       });
     }
 
-    if (state.pending_gate) {
+    // 2. Manage Approval Card Display
+    if (state.pending_gate && state.status === "PENDING_APPROVAL") {
       renderApprovalGate(state.pending_gate);
     } else {
       renderApprovalGate(null);
     }
 
-    if (state.status === "COMPLETED") {
-      appendMessage("Genesis", "🎉 Supervised Triad Round COMPLETED. All agent turns and audit logs recorded.");
-    } else if (state.status === "CANCELLED_BY_USER") {
-      appendMessage("Genesis", `🛑 Triad round was cancelled: ${state.error_message || "Action rejected."}`);
-    } else if (state.status === "FAILED") {
-      appendMessage("Genesis", `⚠️ Triad round failed: ${state.error_message}`);
+    // 3. Render Terminal Session States Idempotently (Once per session)
+    const terminalStatuses = ["COMPLETED", "CANCELLED_BY_USER", "FAILED"];
+    if (terminalStatuses.includes(state.status)) {
+      const termEventId = `triad_${state.session_id}_terminal_${state.status}`;
+      if (state.status === "COMPLETED") {
+        appendMessage(
+          "Genesis",
+          "🎉 Supervised Triad Round COMPLETED. All agent turns and audit logs recorded.",
+          {},
+          termEventId
+        );
+      } else if (state.status === "CANCELLED_BY_USER") {
+        appendMessage(
+          "Genesis",
+          `🛑 Triad round was cancelled: ${state.error_message || "Action rejected."}`,
+          {},
+          termEventId
+        );
+      } else if (state.status === "FAILED") {
+        appendMessage(
+          "Genesis",
+          `⚠️ Triad round failed: ${state.error_message}`,
+          {},
+          termEventId
+        );
+      }
     }
     updateSystemStatus();
   }

@@ -204,7 +204,7 @@ class TestCommunicationInterface(unittest.TestCase):
         self.assertIsNone(state_3["pending_gate"])
 
     def test_triad_rejection_halts_session(self):
-        """Rejecting an approval gate halts the session safely."""
+        """Rejecting an approval gate halts the session safely and blocks subsequent dispatches."""
         init_res = self.client.post("/api/chat/triad/initiate", json={
             "probe_prompt": "Test rejection flow.",
             "is_live": False,
@@ -223,6 +223,102 @@ class TestCommunicationInterface(unittest.TestCase):
         self.assertIn("rejected by Fodoh", state["error_message"])
         self.assertIsNone(state["pending_gate"])
         self.assertEqual(len(state["turns"]), 0)
+
+        # Subsequent gate response must fail closed on backend (HTTP 400)
+        subsequent_res = self.client.post("/api/chat/triad/respond-gate", json={
+            "approval_id": gate_1_id,
+            "action": "approve",
+        })
+        self.assertEqual(subsequent_res.status_code, 400)
+        self.assertIn("already in terminal state", subsequent_res.json()["detail"])
+
+        # Repeated polling of /api/chat/triad/status must be strictly idempotent
+        for _ in range(5):
+            poll_res = self.client.get("/api/chat/triad/status")
+            self.assertEqual(poll_res.status_code, 200)
+            poll_data = poll_res.json()
+            self.assertEqual(poll_data["status"], "CANCELLED_BY_USER")
+            self.assertIsNone(poll_data["pending_gate"])
+            self.assertEqual(len(poll_data["turns"]), 0)
+
+    def test_triad_repeated_polling_and_completion_idempotency(self):
+        """Verify repeated status polling is idempotent during active, completed, and cancelled states."""
+        # Step 1: Initiate
+        self.client.post("/api/chat/triad/initiate", json={
+            "probe_prompt": "Testing polling idempotency.",
+            "is_live": False,
+        })
+
+        # Poll repeatedly during Gate 1
+        for _ in range(4):
+            res = self.client.get("/api/chat/triad/status")
+            self.assertEqual(res.status_code, 200)
+            data = res.json()
+            self.assertEqual(data["status"], "PENDING_APPROVAL")
+            self.assertIsNotNone(data["pending_gate"])
+            self.assertEqual(len(data["turns"]), 0)
+
+        gate_1_id = data["pending_gate"]["approval_id"]
+
+        # Step 2: Approve Gate 1
+        resp_1 = self.client.post("/api/chat/triad/respond-gate", json={
+            "approval_id": gate_1_id,
+            "action": "approve",
+        })
+        self.assertEqual(resp_1.status_code, 200)
+
+        # Poll repeatedly during Gate 2
+        for _ in range(4):
+            res = self.client.get("/api/chat/triad/status")
+            data = res.json()
+            self.assertEqual(data["status"], "PENDING_APPROVAL")
+            self.assertEqual(len(data["turns"]), 1)
+            self.assertEqual(data["turns"][0]["speaker"], "Antigravity")
+
+        gate_2_id = data["pending_gate"]["approval_id"]
+
+        # Step 3: Approve Gate 2
+        resp_2 = self.client.post("/api/chat/triad/respond-gate", json={
+            "approval_id": gate_2_id,
+            "action": "approve",
+        })
+        self.assertEqual(resp_2.status_code, 200)
+        gate_3_id = resp_2.json()["pending_gate"]["approval_id"]
+
+        # Step 4: Approve Gate 3 (Reaches COMPLETED)
+        resp_3 = self.client.post("/api/chat/triad/respond-gate", json={
+            "approval_id": gate_3_id,
+            "action": "approve",
+        })
+        self.assertEqual(resp_3.status_code, 200)
+        self.assertEqual(resp_3.json()["status"], "COMPLETED")
+
+        # Poll repeatedly after COMPLETED
+        for _ in range(5):
+            res = self.client.get("/api/chat/triad/status")
+            data = res.json()
+            self.assertEqual(data["status"], "COMPLETED")
+            self.assertIsNone(data["pending_gate"])
+            self.assertEqual(len(data["turns"]), 3)
+
+        # Attempting further gate response on COMPLETED session must fail closed (HTTP 400)
+        post_completed_res = self.client.post("/api/chat/triad/respond-gate", json={
+            "approval_id": gate_3_id,
+            "action": "approve",
+        })
+        self.assertEqual(post_completed_res.status_code, 400)
+        self.assertIn("already in terminal state", post_completed_res.json()["detail"])
+
+    def test_frontend_app_js_event_deduplication_structure(self):
+        """Verifies that app.js includes stable event ID tracking and terminal deduplication."""
+        app_js_path = PROJECT_ROOT / "interface" / "static" / "app.js"
+        self.assertTrue(app_js_path.exists())
+        js_code = app_js_path.read_text(encoding="utf-8")
+        self.assertIn("renderedEventIds", js_code)
+        self.assertIn("data-event-id", js_code)
+        self.assertIn("turnEventId", js_code)
+        self.assertIn("termEventId", js_code)
+        self.assertIn("terminalStatuses", js_code)
 
     # -------------------------------------------------------------------------
     # 4. Emergency Stop (Kill Switch) & Fail-Closed Safety
