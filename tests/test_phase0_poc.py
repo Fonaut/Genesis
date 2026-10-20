@@ -374,6 +374,116 @@ class TestPhase0HubEngine(unittest.TestCase):
         # Verify Genesis was NEVER invoked
         mock_genesis.process_turn.assert_not_called()
 
+    # -------------------------------------------------------------------------
+    # 12. Response Extraction & Empty Reply Halting Tests (Phase 0B Fixes)
+    # -------------------------------------------------------------------------
+    def test_cli_nonempty_output_extraction(self):
+        """Validates robust response extraction from documented CLI JSON output formats."""
+        cli_agent = CliAntigravityAgent()
+        mock_sandbox = MagicMock(spec=SandboxManager)
+
+        # 1. Standard "response" field in JSON
+        mock_sandbox.run_sandboxed_command.return_value = subprocess.CompletedProcess(
+            args=["agy"],
+            returncode=0,
+            stdout=json.dumps({"status": "SUCCESS", "response": "Architecture response text."}),
+            stderr="",
+        )
+        with patch("subprocess.run"):
+            resp, thought, meta = cli_agent.send_probe("Test prompt", mock_sandbox)
+            self.assertEqual(resp, "Architecture response text.")
+            self.assertIn("Architecture response text", meta["raw_preview"])
+
+        # 2. Alternative "result" field in JSON
+        mock_sandbox.run_sandboxed_command.return_value = subprocess.CompletedProcess(
+            args=["agy"],
+            returncode=0,
+            stdout=json.dumps({"status": "SUCCESS", "result": "Result text."}),
+            stderr="",
+        )
+        with patch("subprocess.run"):
+            resp, _, _ = cli_agent.send_probe("Test prompt", mock_sandbox)
+            self.assertEqual(resp, "Result text.")
+
+    def test_cli_malformed_json_fallback(self):
+        """Validates fallback to plain text if CLI emits non-JSON formatted text."""
+        cli_agent = CliAntigravityAgent()
+        mock_sandbox = MagicMock(spec=SandboxManager)
+
+        mock_sandbox.run_sandboxed_command.return_value = subprocess.CompletedProcess(
+            args=["agy"],
+            returncode=0,
+            stdout="Direct plain text output from model.\n",
+            stderr="",
+        )
+        with patch("subprocess.run"):
+            resp, thought, meta = cli_agent.send_probe("Test prompt", mock_sandbox)
+            self.assertEqual(resp, "Direct plain text output from model.")
+
+    def test_empty_reply_halts_exchange_before_gate_2(self):
+        """
+        CRITICAL REGRESSION TEST:
+        When Antigravity returns empty or whitespace response, execute_poc MUST:
+        1. Halt immediately before Gate 2.
+        2. Never invoke Genesis.
+        3. Never mark session COMPLETED.
+        4. Mark session FAILED with an explicit error message.
+        """
+        empty_agent = MockAntigravityAgent(response_text="   ")
+        gate = MagicMock(spec=HumanApprovalGate)
+        mock_genesis = MagicMock(spec=GenesisParticipant)
+
+        orchestrator = Phase0Orchestrator(
+            antigravity_agent=empty_agent,
+            genesis_participant=mock_genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        with self.assertRaises(HubSafetyError) as ctx:
+            orchestrator.execute_poc(probe_prompt="Testing empty response")
+
+        self.assertIn("empty or whitespace-only response", str(ctx.exception))
+
+        # Verify Gate 2 was NEVER prompted (only Gate 1 for initial probe dispatch)
+        for call_item in gate.request_approval.call_args_list:
+            self.assertNotEqual(call_item.kwargs.get("action_name"), "Pass Antigravity Response to Genesis")
+
+        # Verify Genesis was NEVER invoked
+        mock_genesis.process_turn.assert_not_called()
+
+        # Verify audit status is FAILED
+        log_files = list(self.log_dir.glob("phase0_*.json"))
+        self.assertEqual(len(log_files), 1)
+        audit_data = json.loads(log_files[0].read_text())
+        self.assertEqual(audit_data["status"], "FAILED")
+        self.assertIn("empty or whitespace-only response", audit_data["error_message"])
+
+    def test_sanitized_raw_cli_result_stored_and_redacted(self):
+        """Verifies raw CLI stdout/stderr is sanitized of secrets and persisted locally."""
+        cli_agent = CliAntigravityAgent()
+        mock_sandbox = MagicMock(spec=SandboxManager)
+
+        secret_output = (
+            '{"status": "SUCCESS", "response": "Safe explanation.", "token": "sensitive_token_value_xyz"}'
+        )
+        mock_sandbox.run_sandboxed_command.return_value = subprocess.CompletedProcess(
+            args=["agy"],
+            returncode=0,
+            stdout=secret_output,
+            stderr="key=super_secret_key_12345\nNormal log line\n",
+        )
+        with patch("subprocess.run"):
+            resp, _, meta = cli_agent.send_probe("Test prompt", mock_sandbox)
+            self.assertEqual(resp, "Safe explanation.")
+            debug_log_path = Path(meta["debug_log"])
+            self.assertTrue(debug_log_path.exists())
+
+            log_content = debug_log_path.read_text()
+            self.assertIn("[REDACTED SENSITIVE LINE]", log_content)
+            self.assertNotIn("super_secret_key_12345", log_content)
+            self.assertIn("Normal log line", log_content)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -334,6 +334,20 @@ class MockAntigravityAgent(AntigravityInterface):
         return self.response_text, thought, metadata
 
 
+def sanitize_debug_text(text: Optional[str]) -> str:
+    """Sanitizes potential secrets, tokens, or credentials from debug text."""
+    if not text:
+        return ""
+    sanitized = []
+    sensitive_patterns = ["token", "secret", "password", "key=", "cookie", "auth=", "bearer", "credential"]
+    for line in text.splitlines():
+        if any(pat in line.lower() for pat in sensitive_patterns):
+            sanitized.append("[REDACTED SENSITIVE LINE]")
+        else:
+            sanitized.append(line)
+    return "\n".join(sanitized)
+
+
 class CliAntigravityAgent(AntigravityInterface):
     """
     Adapter invoking the official headless Antigravity CLI ('agy') inside the sandbox.
@@ -407,16 +421,72 @@ class CliAntigravityAgent(AntigravityInterface):
             raise HubSafetyError(diag_msg) from err
 
         latency = time.perf_counter() - t0
+
+        # Preserve sanitized debug output locally with restricted permissions
+        raw_stdout = res.stdout or ""
+        raw_stderr = res.stderr or ""
+        sanitized_stdout = sanitize_debug_text(raw_stdout)
+        sanitized_stderr = sanitize_debug_text(raw_stderr)
+
+        debug_dir = PROJECT_ROOT / "logs" / "hub" / "debug"
+        try:
+            debug_dir.mkdir(parents=True, exist_ok=True)
+            debug_dir.chmod(0o700)
+            debug_file = debug_dir / f"cli_raw_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}.log"
+            debug_file.write_text(
+                f"=== SANITIZED STDOUT ===\n{sanitized_stdout}\n\n=== SANITIZED STDERR ===\n{sanitized_stderr}\n"
+            )
+            debug_file.chmod(0o600)
+            debug_path_str = str(debug_file)
+        except OSError:
+            debug_path_str = "unavailable"
+
         if res.returncode != 0:
-            raise HubSafetyError(f"Antigravity CLI failed (exit {res.returncode}): {res.stderr}")
+            raise HubSafetyError(f"Antigravity CLI failed (exit {res.returncode}): {sanitized_stderr}")
+
+        raw_out = raw_stdout.strip()
+        if not raw_out:
+            raise HubSafetyError("Antigravity CLI produced empty stdout. No response received.")
 
         try:
-            data = json.loads(res.stdout)
-            response_text = data.get("response", res.stdout.strip())
-            thought = data.get("thought")
+            data = json.loads(raw_out)
         except json.JSONDecodeError:
-            response_text = res.stdout.strip()
+            data = None
+
+        if isinstance(data, dict):
+            status = str(data.get("status", "")).upper()
+            if status in ("ERROR", "FAILED"):
+                err_detail = data.get("error") or data.get("message") or "CLI reported failure status"
+                raise HubSafetyError(f"Antigravity CLI returned error status ({status}): {err_detail}")
+
+            response_candidate = (
+                data.get("response")
+                or data.get("result")
+                or data.get("content")
+                or data.get("text")
+                or data.get("output")
+            )
+            if isinstance(response_candidate, dict):
+                response_text = response_candidate.get("text") or response_candidate.get("content") or ""
+            else:
+                response_text = str(response_candidate) if response_candidate is not None else ""
+
+            thought = data.get("thought") or data.get("reasoning")
+            usage_data = data.get("usage", {})
+        else:
+            response_text = raw_out
             thought = None
+            usage_data = {}
+
+        response_text = str(response_text).strip()
+        if not response_text:
+            raise HubSafetyError(
+                "Antigravity CLI returned an empty or whitespace-only response. "
+                "The agent may have attempted an unapproved tool call or halted without producing text."
+            )
+
+        if response_text.startswith("Error:") or response_text.startswith("ERROR:"):
+            raise HubSafetyError(f"Antigravity CLI output indicates an error: {response_text}")
 
         metadata = {
             "mechanism": "headless_cli",
@@ -424,6 +494,9 @@ class CliAntigravityAgent(AntigravityInterface):
             "latency_sec": round(latency, 3),
             "exit_code": res.returncode,
             "cost_usd_est": 0.0,  # Included in Google AI Pro subscription
+            "debug_log": debug_path_str,
+            "raw_preview": sanitized_stdout[:200] if sanitized_stdout else "",
+            "usage": usage_data,
         }
         return response_text, thought, metadata
 
@@ -646,6 +719,13 @@ class Phase0Orchestrator:
             )
             ag_latency = time.perf_counter() - t_ag_start
 
+            if not ag_response or not ag_response.strip():
+                err_msg = "Antigravity returned an empty or whitespace-only response. Halting exchange before Gate 2."
+                audit.status = "FAILED"
+                audit.error_message = err_msg
+                print(f"\n🛑 TURN 1 FAILED: {err_msg}")
+                raise HubSafetyError(err_msg)
+
             turn_1 = AgentTurn(
                 turn_id=1,
                 speaker="Antigravity",
@@ -693,6 +773,13 @@ class Phase0Orchestrator:
             )
             gen_latency = time.perf_counter() - t_gen_start
 
+            if not gen_reply or not gen_reply.strip():
+                err_msg = "Genesis returned an empty or whitespace-only reply."
+                audit.status = "FAILED"
+                audit.error_message = err_msg
+                print(f"\n🛑 TURN 2 FAILED: {err_msg}")
+                raise HubSafetyError(err_msg)
+
             turn_2 = AgentTurn(
                 turn_id=2,
                 speaker="Genesis",
@@ -706,8 +793,6 @@ class Phase0Orchestrator:
             audit.turns.append(turn_2)
 
             print(f"\n💬 TURN 2: [Genesis] (Model: {gen_meta.get('model', 'gpt-4o-mini')} | Latency: {gen_latency:.2f}s)")
-            if gen_thought:
-                print(f"   🤔 Thought: {gen_thought.strip()}")
             print(f"   🗣️  Reply:   {gen_reply.strip()}\n")
 
             audit.status = "COMPLETED"
@@ -767,7 +852,9 @@ def main():
         type=str,
         default=(
             "Antigravity, as co-architect, how would you describe the difference between "
-            "Genesis's short-term conversation history and its long-term ChromaDB vector memory?"
+            "Genesis's short-term conversation history and its long-term ChromaDB vector memory? "
+            "Please respond directly with a concise conceptual explanation in plain text without "
+            "calling tools or running commands."
         ),
         help="Initial probe prompt to send to Antigravity",
     )
