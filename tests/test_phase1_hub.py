@@ -83,8 +83,10 @@ class TestPhase1ThreeAgentHub(unittest.TestCase):
         agent = OpenAIAgentParticipant(is_live=True, mock_response="")
         mock_client = MagicMock()
         mock_completion = MagicMock()
-        mock_completion.choices = [MagicMock()]
-        mock_completion.choices[0].message.content = "   "  # Whitespace-only
+        mock_choice = MagicMock()
+        mock_choice.message.content = "   "  # Whitespace-only
+        mock_choice.finish_reason = "stop"
+        mock_completion.choices = [mock_choice]
         mock_completion.usage = None
         mock_client.chat.completions.create.return_value = mock_completion
 
@@ -96,6 +98,93 @@ class TestPhase1ThreeAgentHub(unittest.TestCase):
                         incoming_message="Hello",
                     )
                 self.assertIn("empty or whitespace-only", str(ctx.exception))
+
+    def test_openai_agent_truncation_detection_and_safeguard(self):
+        """When OpenAI API response hits token limit (finish_reason='length'), raises HubSafetyError."""
+        agent = OpenAIAgentParticipant(is_live=True, max_tokens=350)
+        mock_client = MagicMock()
+        mock_completion = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Establishing a conflict resolution mechanism to address differing opinions constructively could"
+        mock_choice.finish_reason = "length"
+        mock_completion.choices = [mock_choice]
+        mock_completion.usage = MagicMock()
+        mock_completion.usage.prompt_tokens = 200
+        mock_completion.usage.completion_tokens = 350
+        mock_completion.usage.total_tokens = 550
+        mock_client.chat.completions.create.return_value = mock_completion
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}):
+            with patch("openai.OpenAI", return_value=mock_client):
+                with self.assertRaises(HubSafetyError) as ctx:
+                    agent.process_turn(
+                        speaker="Antigravity",
+                        incoming_message="Analyze division of labor.",
+                    )
+                self.assertIn("truncated by output token limit", str(ctx.exception))
+                self.assertIn("finish_reason='length'", str(ctx.exception))
+
+    def test_openai_agent_normal_completion_metadata(self):
+        """When response completes normally (finish_reason='stop'), metadata records safe completion."""
+        agent = OpenAIAgentParticipant(is_live=True, max_tokens=800)
+        mock_client = MagicMock()
+        mock_completion = MagicMock()
+        mock_choice = MagicMock()
+        mock_choice.message.content = "Complete analytical response concluding cleanly."
+        mock_choice.finish_reason = "stop"
+        mock_completion.choices = [mock_choice]
+        mock_completion.usage = MagicMock()
+        mock_completion.usage.prompt_tokens = 250
+        mock_completion.usage.completion_tokens = 150
+        mock_completion.usage.total_tokens = 400
+        mock_client.chat.completions.create.return_value = mock_completion
+
+        with patch.dict(os.environ, {"OPENAI_API_KEY": "sk-test-key"}):
+            with patch("openai.OpenAI", return_value=mock_client):
+                reply, meta = agent.process_turn(
+                    speaker="Antigravity",
+                    incoming_message="Analyze division of labor.",
+                )
+                self.assertEqual(reply, "Complete analytical response concluding cleanly.")
+                self.assertEqual(meta["finish_reason"], "stop")
+                self.assertFalse(meta["is_truncated"])
+                self.assertEqual(meta["prompt_tokens_est"], 250)
+                self.assertEqual(meta["completion_tokens_est"], 150)
+                self.assertEqual(meta["total_tokens_est"], 400)
+                self.assertTrue(meta["cost_usd_est"] > 0.0)
+
+    def test_three_agent_exchange_halts_when_openai_agent_is_truncated(self):
+        """When OpenAI-Agent is truncated, triad exchange halts before Gate 3, Genesis is never called."""
+        ag_agent = MockAntigravityAgent(response_text="Antigravity architecture.")
+        truncated_openai = OpenAIAgentParticipant(
+            is_live=False,
+            mock_response="Incomplete cut off sentence...",
+            mock_finish_reason="length",
+        )
+        genesis = MagicMock(spec=GenesisParticipant)
+        genesis.is_live = False
+        gate = HumanApprovalGate(auto_approve=True)
+
+        orchestrator = Phase1Orchestrator(
+            antigravity_agent=ag_agent,
+            openai_agent=truncated_openai,
+            genesis_participant=genesis,
+            approval_gate=gate,
+            log_dir=self.log_dir,
+        )
+
+        with self.assertRaises(HubSafetyError) as ctx:
+            orchestrator.execute_triad_poc(probe_prompt="Test probe")
+
+        self.assertIn("truncated", str(ctx.exception))
+        genesis.process_turn.assert_not_called()
+
+        # Confirm audit log marked FAILED
+        log_files = list(self.log_dir.glob("phase1_*.json"))
+        self.assertEqual(len(log_files), 1)
+        audit_data = json.loads(log_files[0].read_text())
+        self.assertEqual(audit_data["status"], "FAILED")
+        self.assertIn("truncated", audit_data["error_message"])
 
     def test_chatgpt_summary_context_ingestion(self):
         """Verifies that user-provided ChatGPT summary is appended to system prompt."""

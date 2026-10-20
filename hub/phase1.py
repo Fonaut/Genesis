@@ -122,6 +122,8 @@ class OpenAIAgentParticipant:
         model: str = "gpt-4o-mini",
         mock_response: Optional[str] = None,
         timeout_sec: float = 30.0,
+        max_tokens: int = 800,
+        mock_finish_reason: str = "stop",
     ):
         self.is_live = is_live
         self.model = model
@@ -133,6 +135,8 @@ class OpenAIAgentParticipant:
             "while keeping Fodoh in full control as the central decision-maker."
         )
         self.timeout_sec = timeout_sec
+        self.max_tokens = max_tokens
+        self.mock_finish_reason = mock_finish_reason
 
         self.system_prompt = (
             "You are an independent AI collaborator powered by the OpenAI API, participating in a "
@@ -186,14 +190,18 @@ class OpenAIAgentParticipant:
                     {"role": "system", "content": full_system},
                     {"role": "user", "content": user_payload},
                 ],
-                max_tokens=350,
+                max_tokens=self.max_tokens,
                 temperature=0.7,
                 timeout=self.timeout_sec,
                 # Explicitly NO tools passed
             )
 
             latency = time.perf_counter() - t0
-            reply_text = response.choices[0].message.content or ""
+            choice = response.choices[0]
+            reply_text = choice.message.content or ""
+            finish_reason = getattr(choice, "finish_reason", "stop") or "stop"
+            is_truncated = (finish_reason == "length")
+
             prompt_tokens = (
                 response.usage.prompt_tokens
                 if response.usage
@@ -204,13 +212,21 @@ class OpenAIAgentParticipant:
                 if response.usage
                 else len(reply_text) // 4
             )
+            total_tokens = (
+                response.usage.total_tokens
+                if response.usage
+                else prompt_tokens + completion_tokens
+            )
         else:
             # 100% Offline Mode: Deterministic synthetic reasoning (zero API calls)
             time.sleep(0.01)
             latency = time.perf_counter() - t0
             reply_text = self.mock_response
+            finish_reason = self.mock_finish_reason
+            is_truncated = (finish_reason == "length")
             prompt_tokens = (len(self.system_prompt) + len(incoming_message)) // 4
             completion_tokens = len(reply_text) // 4
+            total_tokens = prompt_tokens + completion_tokens
 
         reply_text = reply_text.strip()
         if not reply_text:
@@ -226,8 +242,21 @@ class OpenAIAgentParticipant:
             "cost_usd_est": round(est_cost, 6),
             "prompt_tokens_est": prompt_tokens,
             "completion_tokens_est": completion_tokens,
+            "total_tokens_est": total_tokens,
+            "finish_reason": finish_reason,
+            "is_truncated": is_truncated,
             "is_live": self.is_live,
         }
+
+        # Truncation Guard: Prevent cut-off messages from reaching Gate 3 or Genesis
+        if is_truncated:
+            raise HubSafetyError(
+                f"OpenAI-Agent response was truncated by output token limit "
+                f"(finish_reason='length', max_tokens={self.max_tokens}). "
+                f"Cut-off text: '{reply_text[-60:]}...'. Halting before Gate 3 "
+                "to prevent forwarding incomplete text to Genesis."
+            )
+
         return reply_text, metadata
 
 
@@ -359,6 +388,17 @@ class Phase1Orchestrator:
                 audit.status = "FAILED"
                 audit.error_message = err_msg
                 print(f"\n🛑 TURN 2 FAILED: {err_msg}")
+                raise HubSafetyError(err_msg)
+
+            if openai_meta.get("is_truncated") or openai_meta.get("finish_reason") == "length":
+                err_msg = (
+                    f"OpenAI-Agent response was truncated by output token limit (finish_reason='length'). "
+                    f"Cut-off point: '{openai_reply[-60:]}...'. Halting before Gate 3 to prevent "
+                    "forwarding incomplete text to Genesis."
+                )
+                audit.status = "FAILED"
+                audit.error_message = err_msg
+                print(f"\n🛑 TURN 2 TRUNCATED: {err_msg}")
                 raise HubSafetyError(err_msg)
 
             openai_cost = openai_meta.get("cost_usd_est", 0.0)
@@ -530,9 +570,16 @@ def main():
         default=60.0,
         help="Subprocess timeout in seconds for CLI execution (default: 60.0)",
     )
+    parser.add_argument(
+        "--openai-max-tokens",
+        type=int,
+        default=800,
+        help="Maximum output tokens for OpenAI-Agent (default: 800, range: 100 to 2000)",
+    )
     args = parser.parse_args()
 
     effective_timeout = min(max(args.timeout, 5.0), 90.0)
+    effective_openai_tokens = min(max(args.openai_max_tokens, 100), 2000)
 
     # Ingestion of user-approved ChatGPT summary briefing
     briefing_context = args.chatgpt_summary
@@ -550,6 +597,7 @@ def main():
     mode_str = "🔴 LIVE API CALLS" if args.live else "🟢 100% OFFLINE DRY-RUN (ZERO API CALLS)"
     print(f"   Execution Mode: {mode_str}")
     print(f"   Approval Gate:  {'Auto-Approve (TEST)' if args.auto_approve else 'Manual (Fodoh)'}")
+    print(f"   OpenAI Output:  {effective_openai_tokens} max tokens")
     print(f"   Cost Ceiling:   ${args.max_cost:.4f} USD")
     print(f"   Timeout Cap:    {effective_timeout:.1f}s")
     if briefing_context:
@@ -570,7 +618,7 @@ def main():
     else:
         raise ValueError(f"Unknown mechanism: {args.mechanism}")
 
-    openai_agent = OpenAIAgentParticipant(is_live=args.live)
+    openai_agent = OpenAIAgentParticipant(is_live=args.live, max_tokens=effective_openai_tokens)
     genesis = GenesisParticipant(is_live=args.live)
     gate = HumanApprovalGate(auto_approve=args.auto_approve)
     governor = SafetyGovernor(max_turns=3, max_cost_usd=args.max_cost)
