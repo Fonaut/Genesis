@@ -326,6 +326,7 @@ class MockAntigravityAgent(AntigravityInterface):
         thought = "Analyzing Genesis architectural difference between short-term history and vector memory."
         metadata = {
             "mechanism": "offline_mock",
+            "model": "mock-synthetic",
             "prompt_tokens_est": len(prompt) // 4,
             "completion_tokens_est": len(self.response_text) // 4,
             "cost_usd": 0.0,
@@ -419,8 +420,10 @@ class CliAntigravityAgent(AntigravityInterface):
 
         metadata = {
             "mechanism": "headless_cli",
+            "model": "gemini-3.8-flash-high",
             "latency_sec": round(latency, 3),
             "exit_code": res.returncode,
+            "cost_usd_est": 0.0,  # Included in Google AI Pro subscription
         }
         return response_text, thought, metadata
 
@@ -562,11 +565,18 @@ Instructions:
             )
 
         latency = time.perf_counter() - t0
+        # gpt-4o-mini pricing: $0.15/1M input, $0.60/1M output
+        est_input_tokens = len(incoming_message) // 4 + 400  # prompt + system/identity overhead
+        est_output_tokens = len(reply_text) // 4 + (len(thought or "") // 4)
+        est_cost = (est_input_tokens * 0.00000015) + (est_output_tokens * 0.00000060) if self.is_live else 0.0
+
         metadata = {
             "speaker": "Genesis",
+            "model": "gpt-4o-mini" if self.is_live else "synthetic-offline",
             "latency_sec": round(latency, 3),
             "memory_stored": False,  # Strict isolation verified
             "is_live": self.is_live,
+            "cost_usd_est": round(est_cost, 6),
         }
         return reply_text, thought, metadata
 
@@ -648,6 +658,9 @@ class Phase0Orchestrator:
             )
             audit.turns.append(turn_1)
 
+            print(f"\n💬 TURN 1: [Antigravity] (Model: {ag_meta.get('model', 'gemini-3.8-flash-high')} | Latency: {ag_latency:.2f}s)")
+            print(f"   {ag_response.strip()}\n")
+
             # If running Phase 0A (probe-only), finish immediately without invoking Genesis
             if probe_only:
                 audit.status = "PROBE_COMPLETED"
@@ -691,6 +704,11 @@ class Phase0Orchestrator:
                 metadata=gen_meta,
             )
             audit.turns.append(turn_2)
+
+            print(f"\n💬 TURN 2: [Genesis] (Model: {gen_meta.get('model', 'gpt-4o-mini')} | Latency: {gen_latency:.2f}s)")
+            if gen_thought:
+                print(f"   🤔 Thought: {gen_thought.strip()}")
+            print(f"   🗣️  Reply:   {gen_reply.strip()}\n")
 
             audit.status = "COMPLETED"
 
@@ -811,6 +829,11 @@ def main():
     print(f"   Turns Completed: {len(audit.turns)}")
     print(f"   Total Latency:   {audit.total_latency_sec:.2f}s")
     print(f"   Estimated Tokens:{audit.total_tokens_estimated}")
+    for turn in audit.turns:
+        m_name = turn.metadata.get("model", "unknown")
+        cost_val = turn.metadata.get("cost_usd_est", 0.0)
+        cost_str = f" | Est Cost: ${cost_val:.6f}" if cost_val > 0 else " | Cost: $0.00 (Included)"
+        print(f"   - Turn {turn.turn_id} [{turn.speaker}] ({m_name} | {turn.latency_sec:.2f}s{cost_str})")
     print("=" * 75)
 
 
