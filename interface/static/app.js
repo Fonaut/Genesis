@@ -561,10 +561,118 @@ document.addEventListener("DOMContentLoaded", () => {
           sandboxEl.textContent = data.sandbox_status;
         }
       }
+
+      // 5. Memory Review Queue Indicators
+      if (data.pending_memory_reviews_count !== undefined) {
+        const qCount = document.getElementById("memoryQueueCount");
+        if (qCount) qCount.textContent = data.pending_memory_reviews_count;
+      }
+      if (data.total_collaborative_memories !== undefined) {
+        const totalEl = document.getElementById("totalStagedMemoriesVal");
+        if (totalEl) totalEl.textContent = data.total_collaborative_memories;
+      }
     } catch (e) {
       console.error("Failed to update system status:", e);
     }
   }
+
+  // ---------------------------------------------------------------------------
+  // 9. Collaborative Memory Staging & Review Queue Modal
+  // ---------------------------------------------------------------------------
+  const memoryModal = document.getElementById("memoryModal");
+  const btnOpenMemoryModal = document.getElementById("btnOpenMemoryModal");
+  const btnCloseMemoryModal = document.getElementById("btnCloseMemoryModal");
+  const btnCloseMemoryModalFooter = document.getElementById("btnCloseMemoryModalFooter");
+  const memoryModalBody = document.getElementById("memoryModalBody");
+  const btnReconcileMemories = document.getElementById("btnReconcileMemories");
+
+  async function loadStagingMemories() {
+    memoryModalBody.innerHTML = "<p style='color:#94a3b8;'>Loading staged memories...</p>";
+    try {
+      const res = await fetch("/api/memories/staging");
+      const items = await res.json();
+      if (!items || items.length === 0) {
+        memoryModalBody.innerHTML = "<p style='color:#94a3b8; text-align:center; padding: 24px;'>No memories currently in staging store.</p>";
+        return;
+      }
+
+      let html = `<div style="display:flex; flex-direction:column; gap:12px;">`;
+      items.forEach((m) => {
+        let badgeColor = "#38bdf8";
+        if (m.status === "APPROVED") badgeColor = "#34d399";
+        else if (m.status === "REJECTED") badgeColor = "#f87171";
+        else if (m.status === "PENDING_REVIEW") badgeColor = "#fbbf24";
+
+        html += `
+          <div style="background:#0f172a; padding:14px; border-radius:8px; border:1px solid #334155;" data-mem-id="${m.memory_id}">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <div>
+                <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:2px 8px; border-radius:4px; font-size:0.75rem; font-weight:600;">${m.category}</span>
+                <span style="margin-left:6px; font-size:0.8rem; color:#94a3b8;">Speaker: <strong>${m.speaker}</strong></span>
+                <span style="margin-left:6px; font-size:0.75rem; color:#64748b;">${(m.timestamp || "").slice(0, 10)}</span>
+              </div>
+              <span style="border:1px solid ${badgeColor}; color:${badgeColor}; padding:2px 8px; border-radius:12px; font-size:0.7rem; font-weight:bold;">${m.status}</span>
+            </div>
+            <p style="color:#f1f5f9; font-size:0.95rem; margin:0 0 10px 0; line-height:1.4;">${m.content}</p>
+            ${m.authorization_record ? `<div style="font-size:0.75rem; color:#64748b; margin-bottom:8px;">🔒 Auth: <code>${m.authorization_record}</code></div>` : ""}
+            <div style="display:flex; gap:8px; justify-content:flex-end;">
+              ${m.status === "PENDING_REVIEW" ? `
+                <button class="btn btn-sm btn-outline" style="color:#34d399; border-color:#059669;" onclick="handleMemoryAction('${m.memory_id}', 'approve')">✅ Approve</button>
+                <button class="btn btn-sm btn-outline" style="color:#f87171; border-color:#dc2626;" onclick="handleMemoryAction('${m.memory_id}', 'reject')">❌ Reject</button>
+              ` : ""}
+              <button class="btn btn-sm btn-ghost" style="color:#94a3b8; font-size:0.75rem;" onclick="handleMemoryAction('${m.memory_id}', 'delete')">🗑️ Delete</button>
+            </div>
+          </div>
+        `;
+      });
+      html += `</div>`;
+      memoryModalBody.innerHTML = html;
+    } catch (err) {
+      memoryModalBody.innerHTML = `<p style="color:#f87171;">Failed to load staging store: ${err.message}</p>`;
+    }
+  }
+
+  window.handleMemoryAction = async function(memoryId, action) {
+    try {
+      const res = await fetch("/api/memories/staging/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memory_id: memoryId, action: action }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Error: ${err.detail || "Action failed"}`);
+        return;
+      }
+      loadStagingMemories();
+      updateSystemStatus();
+    } catch (e) {
+      alert(`Network error: ${e.message}`);
+    }
+  };
+
+  btnOpenMemoryModal.addEventListener("click", () => {
+    memoryModal.style.display = "flex";
+    loadStagingMemories();
+  });
+  btnCloseMemoryModal.addEventListener("click", () => { memoryModal.style.display = "none"; });
+  btnCloseMemoryModalFooter.addEventListener("click", () => { memoryModal.style.display = "none"; });
+
+  btnReconcileMemories.addEventListener("click", async () => {
+    btnReconcileMemories.disabled = true;
+    btnReconcileMemories.textContent = "Reconciling...";
+    try {
+      const res = await fetch("/api/memories/staging/reconcile", { method: "POST" });
+      const data = await res.json();
+      alert(`✅ Consistency Reconciled!\nTotal Staged: ${data.total_staged_memories}\nRe-indexed in Chroma: ${data.reindexed_in_chroma}`);
+      loadStagingMemories();
+    } catch (err) {
+      alert(`Reconciliation error: ${err.message}`);
+    } finally {
+      btnReconcileMemories.disabled = false;
+      btnReconcileMemories.textContent = "🔄 Reconcile Consistency";
+    }
+  });
 
   // Poll intervals
   pollJournalStatus();

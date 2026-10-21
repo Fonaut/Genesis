@@ -132,6 +132,23 @@
             </div>
           </div>
         </div>
+
+        <!-- Collaborative Memory Staging & Review Queue -->
+        <div class="sidebar-section">
+          <div class="sidebar-heading">MEMORY STAGING & REVIEW</div>
+          <div class="governance-card">
+            <div class="gov-row">
+              <span>Review Queue:</span>
+              <button class="btn btn-sm btn-outline" id="btnOpenMemoryModal" style="padding: 2px 8px; font-size: 0.75rem;">
+                🧠 Review (<span id="memoryQueueCount">0</span>)
+              </button>
+            </div>
+            <div class="gov-row">
+              <span>Staged Total:</span>
+              <span class="gov-val" id="totalStagedMemoriesVal">0</span>
+            </div>
+          </div>
+        </div>
       </aside>
 
       <!-- Center Chat & Stream Pane -->
@@ -203,6 +220,23 @@
         </div>
         <div class="modal-body" id="journalModalBody">
           Loading report...
+        </div>
+      </div>
+    </div>
+
+    <!-- Collaborative Memory Staging & Review Queue Modal -->
+    <div class="modal-backdrop" id="memoryModal" style="display:none;">
+      <div class="modal-card" style="max-width: 720px; width: 90%;">
+        <div class="modal-header">
+          <h3>🧠 Collaborative Memory Staging & Review Queue</h3>
+          <button class="modal-close" id="btnCloseMemoryModal">&times;</button>
+        </div>
+        <div class="modal-body" id="memoryModalBody" style="max-height: 480px; overflow-y: auto;">
+          Loading staged memories...
+        </div>
+        <div style="padding: 12px 20px; border-top: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; background: #0b1120;">
+          <button class="btn btn-sm btn-ghost" id="btnReconcileMemories" style="font-size:0.8rem;">🔄 Reconcile Consistency</button>
+          <button class="btn btn-sm btn-outline" id="btnCloseMemoryModalFooter">Close</button>
         </div>
       </div>
     </div>

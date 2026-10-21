@@ -37,12 +37,17 @@ class TestCommunicationInterface(unittest.TestCase):
         engine.conversations_file = self.test_log_dir / "conversations.json"
         engine.active_triad_session = None
 
+        # Isolate collaborative staging store to test directory
+        self.original_staging_file = engine.collaborative_manager.staging_file
+        engine.collaborative_manager.staging_file = self.test_log_dir / "collaborative_staging.json"
+
         # Ensure kill-switch file is absent
         stop_file = PROJECT_ROOT / ".hub_stopped"
         if stop_file.exists():
             stop_file.unlink()
 
     def tearDown(self):
+        engine.collaborative_manager.staging_file = self.original_staging_file
         stop_file = PROJECT_ROOT / ".hub_stopped"
         if stop_file.exists():
             stop_file.unlink()

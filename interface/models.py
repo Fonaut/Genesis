@@ -52,3 +52,20 @@ class ChatTurnResponse(BaseModel):
     model: str = "mock"
     finish_reason: Optional[str] = None
     metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class MemoryReviewRequest(BaseModel):
+    memory_id: str = Field(..., description="ID of the memory in staging")
+    action: str = Field(..., description="'approve', 'reject', 'edit', or 'delete'")
+    edited_content: Optional[str] = Field(default=None, description="Updated memory text if action is 'edit'")
+
+
+class MemoryProposeRequest(BaseModel):
+    content: str = Field(..., min_length=1, description="Candidate memory statement")
+    speaker: str = Field(..., description="Proposing speaker ('Antigravity', 'OpenAI-Agent', 'Genesis', 'Fodoh')")
+    category: str = Field(..., description="Memory category")
+    session_id: str = Field(..., description="Source session ID")
+    turn_id: Optional[int] = Field(default=None, description="Source turn index")
+    transcript_path: Optional[str] = Field(default=None, description="Path to original transcript")
+    authorization_record: Optional[str] = Field(default=None, description="Backend gate authorization record")
+    rationale: Optional[str] = Field(default="", description="Why this memory is significant")

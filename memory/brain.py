@@ -37,6 +37,10 @@ class Brain:
             embedding_function=self.embedding_fn
         )
 
+        # 5. Initialize separate collaborative memory staging & review system
+        from memory.collaborative import CollaborativeMemoryManager
+        self.collaborative = CollaborativeMemoryManager(chroma_client=self.chroma_client)
+
     def _load_json(self):
         """Load memories from JSON (fallback / history)."""
         return json.loads(self.json_file.read_text())
@@ -96,3 +100,32 @@ class Brain:
                 ids=[memory_hash],
                 documents=[memory]
             )
+
+    # -------------------------------------------------------------------------
+    # Collaborative Memory Delegations
+    # -------------------------------------------------------------------------
+
+    def remember_collaborative(self, content: str, speaker: str, category: str, session_id: str, **kwargs):
+        """Proposes a collaborative memory into the staging store."""
+        if not hasattr(self, "collaborative") or self.collaborative is None:
+            from memory.collaborative import CollaborativeMemoryManager
+            self.collaborative = CollaborativeMemoryManager(chroma_client=getattr(self, "chroma_client", None))
+        return self.collaborative.propose_memory(
+            content=content,
+            speaker=speaker,
+            category=category,
+            session_id=session_id,
+            **kwargs,
+        )
+
+    def recall_collaborative(self, query: str = "", limit: int = 3, active_only: bool = True, category: str = None):
+        """Recalls collaborative memories, by default strictly active recommendations."""
+        if not hasattr(self, "collaborative") or self.collaborative is None:
+            from memory.collaborative import CollaborativeMemoryManager
+            self.collaborative = CollaborativeMemoryManager(chroma_client=getattr(self, "chroma_client", None))
+        return self.collaborative.recall_memories(
+            query=query,
+            limit=limit,
+            active_only=active_only,
+            category=category,
+        )

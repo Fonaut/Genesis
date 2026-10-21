@@ -26,6 +26,8 @@ from interface.models import (
     TriadGateResponseRequest,
     KillSwitchRequest,
     JournalActionRequest,
+    MemoryReviewRequest,
+    MemoryProposeRequest,
 )
 from hub.phase0 import HubSafetyError, KillSwitchActiveError
 from hub.phase1 import CostLimitExceededError
@@ -98,6 +100,8 @@ async def get_status():
         "sandbox_status": sandbox_label,
         "sandbox_path": str(engine.sandbox.sandbox_path),
         "is_live_active": triad.is_live if triad else False,
+        "pending_memory_reviews_count": len(engine.collaborative_manager.get_review_queue()),
+        "total_collaborative_memories": len(engine.collaborative_manager._read_staging_json()),
         "active_triad_session": triad_data,
         "participants": [
             {"id": "Genesis", "name": "Genesis", "role": "Voice Companion & Orchestrator", "color": "purple"},
@@ -245,6 +249,54 @@ async def handle_journal_action(req: JournalActionRequest):
             raise HTTPException(status_code=400, detail=f"Unknown journal action '{action}'.")
     except Exception as err:
         raise HTTPException(status_code=400, detail=str(err))
+
+
+# -----------------------------------------------------------------------------
+# Collaborative Memory Staging & Human Review Queue
+# -----------------------------------------------------------------------------
+
+@app.get("/api/memories/staging")
+async def get_staging_memories(status: Optional[str] = None):
+    items = engine.collaborative_manager._read_staging_json()
+    if status:
+        items = [it for it in items if it.get("status") == status.upper()]
+    return items
+
+
+@app.post("/api/memories/staging/review")
+async def review_staging_memory(req: MemoryReviewRequest):
+    act = req.action.lower()
+    if act == "delete":
+        success = engine.collaborative_manager.delete_memory(req.memory_id)
+        if not success:
+            raise HTTPException(status_code=404, detail=f"Memory '{req.memory_id}' not found.")
+        return {"status": "DELETED", "memory_id": req.memory_id}
+    else:
+        try:
+            prov = engine.collaborative_manager.review_memory(
+                memory_id=req.memory_id,
+                action=act,
+                edited_content=req.edited_content,
+            )
+            return {"status": "SUCCESS", "memory": prov.to_dict()}
+        except KeyError as err:
+            raise HTTPException(status_code=404, detail=str(err))
+        except ValueError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+
+
+@app.get("/api/memories/staging/backups")
+async def list_staging_backups():
+    b_dir = engine.collaborative_manager.backup_dir
+    if not b_dir.exists():
+        return []
+    backups = [p.name for p in sorted(b_dir.glob("collaborative_staging_*.json"), reverse=True)]
+    return backups
+
+
+@app.post("/api/memories/staging/reconcile")
+async def reconcile_staging_consistency():
+    return engine.collaborative_manager.reconcile_consistency()
 
 
 # -----------------------------------------------------------------------------

@@ -28,6 +28,12 @@ from hub.phase1 import (
     OpenAIAgentParticipant,
 )
 from journal.manager import DevelopmentJournalManager
+from memory.collaborative import (
+    CollaborativeMemoryManager,
+    MemoryCategory,
+    ApprovalStatus,
+    MemoryProvenance,
+)
 
 
 @dataclass
@@ -73,6 +79,7 @@ class CommunicationInterfaceEngine:
         self.governor = SafetyGovernor(max_turns=20, max_cost_usd=max_cost_usd)
         self.journal_manager = DevelopmentJournalManager()
         self.sandbox = SandboxManager()
+        self.collaborative_manager = CollaborativeMemoryManager()
 
         # In-memory active triad session state
         self.active_triad_session: Optional[TriadSessionState] = None
@@ -312,7 +319,23 @@ class CommunicationInterfaceEngine:
             state.status = "CANCELLED_BY_USER"
             state.error_message = f"Action '{gate.action_name}' was rejected by Fodoh."
             state.pending_gate = None
-            self._save_triad_audit(state)
+            audit_file = self._save_triad_audit(state)
+
+            # Record historical rejected proposal (isolated from active recommendations)
+            try:
+                snippet = gate.proposed_payload[:120].replace("\n", " ")
+                self.collaborative_manager.propose_memory(
+                    content=f"Proposed action '{gate.action_name}' with payload '{snippet}...' was rejected by Fodoh.",
+                    speaker=gate.recipient,
+                    category=MemoryCategory.UNVERIFIED_PROPOSAL.value,
+                    session_id=state.session_id,
+                    transcript_path=str(audit_file),
+                    authorization_record=f"{gate.approval_id}:REJECTED_BY_FODOH",
+                    rationale="Human gate rejection: Action explicitly rejected by Fodoh.",
+                )
+            except Exception:
+                pass
+
             return state
 
         # ---------------------------------------------------------------------
@@ -493,7 +516,23 @@ class CommunicationInterfaceEngine:
 
         state.status = "COMPLETED"
         state.pending_gate = None
-        self._save_triad_audit(state)
+        audit_file = self._save_triad_audit(state)
+
+        # Stage candidate collaborative consensus memory into review queue (with Gate 3 authorization record)
+        try:
+            prompt_snip = state.probe_prompt[:80].replace("\n", " ")
+            self.collaborative_manager.propose_memory(
+                content=f"Triad consensus reached: Genesis synthesized Antigravity and OpenAI-Agent inputs on '{prompt_snip}'.",
+                speaker="Genesis",
+                category=MemoryCategory.APPROVED_DECISION.value,
+                session_id=state.session_id,
+                turn_id=3,
+                transcript_path=str(audit_file),
+                authorization_record=f"gate_3_{state.session_id}:APPROVED_BY_FODOH",
+                rationale="Supervised triad round completed successfully with all human approval checkpoints passed.",
+            )
+        except Exception:
+            pass
 
     # -------------------------------------------------------------------------
     # Persistence Helpers
