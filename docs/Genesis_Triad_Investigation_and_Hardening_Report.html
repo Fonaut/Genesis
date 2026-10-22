@@ -59,6 +59,11 @@
           <div><strong class="text-[var(--foreground,#f8fafc)]">Reviewer:</strong> ChatGPT</div>
           <div><strong class="text-[var(--foreground,#f8fafc)]">Architect:</strong> Antigravity</div>
           <div><strong class="text-[var(--foreground,#f8fafc)]">Date:</strong> October 22, 2026</div>
+          <div class="pt-2">
+            <button onclick="downloadSelf()" class="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded-lg text-xs font-semibold shadow-md transition-all cursor-pointer">
+              <span>⬇️</span> Download HTML File
+            </button>
+          </div>
         </div>
       </div>
 
@@ -389,6 +394,19 @@
   </div>
 
   <script>
+    function downloadSelf() {
+      const htmlContent = "<!DOCTYPE html>\n" + document.documentElement.outerHTML;
+      const blob = new Blob([htmlContent], { type: 'text/html;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'Genesis_Triad_Investigation_and_Hardening_Report.html';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    }
+
     function switchTab(tabId) {
       const tabs = ['exec', 'issue1', 'issue2', 'memory', 'plan'];
       tabs.forEach(t => {

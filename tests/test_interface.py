@@ -733,6 +733,19 @@ class TestCommunicationInterface(unittest.TestCase):
         res_rep = self.client.get("/api/journal/report")
         self.assertEqual(res_rep.status_code, 200)
 
+    def test_html_report_view_and_download_endpoints(self):
+        """Verify /report and /api/report/download serve the generated HTML report file."""
+        res_view = self.client.get("/report")
+        self.assertEqual(res_view.status_code, 200)
+        self.assertIn("Genesis Communication Hub", res_view.text)
+        self.assertIn("Live Triad Investigation", res_view.text)
+
+        res_dl = self.client.get("/api/report/download")
+        self.assertEqual(res_dl.status_code, 200)
+        self.assertIn("text/html", res_dl.headers.get("content-type", ""))
+        self.assertIn("attachment", res_dl.headers.get("content-disposition", ""))
+        self.assertIn("Genesis_Triad_Investigation_and_Hardening_Report.html", res_dl.headers.get("content-disposition", ""))
+
 
 if __name__ == "__main__":
     unittest.main()

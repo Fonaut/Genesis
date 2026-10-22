@@ -17,7 +17,7 @@ if str(PROJECT_ROOT) not in sys.path:
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from interface.engine import CommunicationInterfaceEngine
@@ -58,8 +58,10 @@ if STATIC_DIR.exists():
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 
+REPORT_HTML = CURRENT_DIR.parent / "docs" / "Genesis_Triad_Investigation_and_Hardening_Report.html"
+
 # -----------------------------------------------------------------------------
-# Frontend Root
+# Frontend Root & Report Viewing / Download
 # -----------------------------------------------------------------------------
 
 @app.get("/", response_class=HTMLResponse)
@@ -70,6 +72,24 @@ async def get_index():
             status_code=500,
         )
     return HTMLResponse(content=INDEX_HTML.read_text(encoding="utf-8"), status_code=200)
+
+
+@app.get("/report", response_class=HTMLResponse)
+async def view_report():
+    if not REPORT_HTML.exists():
+        raise HTTPException(status_code=404, detail="Report HTML file not found.")
+    return HTMLResponse(content=REPORT_HTML.read_text(encoding="utf-8"), status_code=200)
+
+
+@app.get("/api/report/download")
+async def download_report():
+    if not REPORT_HTML.exists():
+        raise HTTPException(status_code=404, detail="Report HTML file not found.")
+    return FileResponse(
+        path=str(REPORT_HTML),
+        filename="Genesis_Triad_Investigation_and_Hardening_Report.html",
+        media_type="text/html",
+    )
 
 
 # -----------------------------------------------------------------------------
