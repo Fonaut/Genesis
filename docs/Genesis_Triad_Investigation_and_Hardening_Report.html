@@ -1,0 +1,410 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Genesis Triad Collaboration & System Hardening Report</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    :root {
+      --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+    body {
+      font-family: var(--font-sans);
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.375rem;
+      padding: 0.25rem 0.625rem;
+      border-radius: 9999px;
+      font-size: 0.75rem;
+      font-weight: 600;
+    }
+    .tab-btn.active {
+      border-bottom: 2px solid #3b82f6;
+      color: #3b82f6;
+      font-weight: 600;
+    }
+  </style>
+</head>
+<body class="bg-[var(--background,#0b0f19)] text-[var(--foreground,#f8fafc)] antialiased p-4 md:p-8">
+  <div class="max-w-5xl mx-auto space-y-6">
+
+    <!-- Header Banner -->
+    <header class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-lg">
+      <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div class="flex items-center gap-2 mb-2">
+            <span class="badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+              <span class="w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+              VERIFIED OFFLINE
+            </span>
+            <span class="badge bg-blue-500/10 text-blue-400 border border-blue-500/20">
+              GENESIS HUB PHASE 1
+            </span>
+            <span class="badge bg-purple-500/10 text-purple-400 border border-purple-500/20">
+              AUDIT MILESTONE #11
+            </span>
+          </div>
+          <h1 class="text-2xl md:text-3xl font-bold tracking-tight text-[var(--foreground,#f8fafc)]">
+            Genesis Communication Hub: Live Triad Investigation & System Hardening Report
+          </h1>
+          <p class="text-sm text-[var(--muted-foreground,#94a3b8)] mt-1">
+            Comprehensive audit, role-spoofing remediation, atomic budget reservations, and multi-round architecture.
+          </p>
+        </div>
+        <div class="text-right text-xs text-[var(--muted-foreground,#94a3b8)] space-y-1">
+          <div><strong class="text-[var(--foreground,#f8fafc)]">Director:</strong> Fodoh</div>
+          <div><strong class="text-[var(--foreground,#f8fafc)]">Reviewer:</strong> ChatGPT</div>
+          <div><strong class="text-[var(--foreground,#f8fafc)]">Architect:</strong> Antigravity</div>
+          <div><strong class="text-[var(--foreground,#f8fafc)]">Date:</strong> October 22, 2026</div>
+        </div>
+      </div>
+
+      <!-- Quick Metrics Grid -->
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-6 pt-6 border-t border-[var(--border,#1e293b)]">
+        <div class="bg-[var(--background,#0b0f19)]/60 rounded-xl p-3 border border-[var(--border,#1e293b)]">
+          <div class="text-xs text-[var(--muted-foreground,#94a3b8)]">Regression Test Suite</div>
+          <div class="text-lg font-bold text-emerald-400 mt-1">151 / 151 Passing</div>
+          <div class="text-xs text-emerald-500/80">100% Offline Success</div>
+        </div>
+        <div class="bg-[var(--background,#0b0f19)]/60 rounded-xl p-3 border border-[var(--border,#1e293b)]">
+          <div class="text-xs text-[var(--muted-foreground,#94a3b8)]">Reconciled Historical Spend</div>
+          <div class="text-lg font-bold text-blue-400 mt-1">$0.001075 USD</div>
+          <div class="text-xs text-[var(--muted-foreground,#94a3b8)]">OpenAI Metered Tokens</div>
+        </div>
+        <div class="bg-[var(--background,#0b0f19)]/60 rounded-xl p-3 border border-[var(--border,#1e293b)]">
+          <div class="text-xs text-[var(--muted-foreground,#94a3b8)]">Estimated Cost Ceiling</div>
+          <div class="text-lg font-bold text-purple-400 mt-1">$0.050000 USD</div>
+          <div class="text-xs text-purple-400/80">Pre-Dispatch Enforced</div>
+        </div>
+        <div class="bg-[var(--background,#0b0f19)]/60 rounded-xl p-3 border border-[var(--border,#1e293b)]">
+          <div class="text-xs text-[var(--muted-foreground,#94a3b8)]">Staged Memory Candidates</div>
+          <div class="text-lg font-bold text-amber-400 mt-1">1 Pending Review</div>
+          <div class="text-xs text-amber-400/80">Zero Autonomous Writes</div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Navigation Tabs -->
+    <div class="flex border-b border-[var(--border,#1e293b)] text-sm space-x-6">
+      <button onclick="switchTab('exec')" id="tab-exec" class="tab-btn active pb-3 px-1 transition-colors">Executive Summary</button>
+      <button onclick="switchTab('issue1')" id="tab-issue1" class="tab-btn pb-3 px-1 text-[var(--muted-foreground,#94a3b8)] hover:text-[var(--foreground,#f8fafc)] transition-colors">Issue 1: Role Spoofing</button>
+      <button onclick="switchTab('issue2')" id="tab-issue2" class="tab-btn pb-3 px-1 text-[var(--muted-foreground,#94a3b8)] hover:text-[var(--foreground,#f8fafc)] transition-colors">Issue 2: Budget Reservations</button>
+      <button onclick="switchTab('memory')" id="tab-memory" class="tab-btn pb-3 px-1 text-[var(--muted-foreground,#94a3b8)] hover:text-[var(--foreground,#f8fafc)] transition-colors">Staged Memory Candidate</button>
+      <button onclick="switchTab('plan')" id="tab-plan" class="tab-btn pb-3 px-1 text-[var(--muted-foreground,#94a3b8)] hover:text-[var(--foreground,#f8fafc)] transition-colors">Multi-Round Plan</button>
+    </div>
+
+    <!-- TAB 1: Executive Summary -->
+    <section id="content-exec" class="space-y-6">
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <h2 class="text-xl font-bold text-[var(--foreground,#f8fafc)] flex items-center gap-2">
+          <span>🎯</span> Key Findings & Audit Certifications
+        </h2>
+        <div class="space-y-3 text-sm text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+          <p>
+            Following the first live supervised triad session between <strong class="text-[var(--foreground,#f8fafc)]">Fodoh</strong>, <strong class="text-blue-400">Antigravity</strong>, <strong class="text-emerald-400">OpenAI-Agent</strong>, and <strong class="text-purple-400">Genesis</strong>, two structural issues were identified:
+          </p>
+          <ul class="list-disc pl-5 space-y-1.5 text-sm">
+            <li><strong class="text-[var(--foreground,#f8fafc)]">Issue 1 (Agent Role Spoofing):</strong> Antigravity's Turn 1 output contained self-generated headings mimicking OpenAI-Agent and Genesis before those turns had independently executed.</li>
+            <li><strong class="text-[var(--foreground,#f8fafc)]">Issue 2 (Cumulative Cost Disconnect):</strong> The UI counter showed $0.000265 rather than incorporating the live session's OpenAI calls ($0.000360 + $0.000316 = $0.000676).</li>
+          </ul>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 pt-4">
+          <div class="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/20">
+            <div class="text-emerald-400 font-semibold text-sm flex items-center gap-2">
+              <span>✅</span> Core Identity & Personal Memory Invariant
+            </div>
+            <p class="text-xs text-[var(--muted-foreground,#94a3b8)] mt-2">
+              Genesis’s identity (<code class="text-xs bg-[var(--background,#0b0f19)] px-1 py-0.5 rounded">identity/self.json</code>) and private personal memory (<code class="text-xs bg-[var(--background,#0b0f19)] px-1 py-0.5 rounded">memory/memories.json</code>) remain byte-for-byte identical. No collaborative synthesis was written to long-term storage.
+            </p>
+          </div>
+          <div class="p-4 rounded-xl bg-blue-950/20 border border-blue-500/20">
+            <div class="text-blue-400 font-semibold text-sm flex items-center gap-2">
+              <span>🛡️</span> Zero Paid API Calls Policy
+            </div>
+            <p class="text-xs text-[var(--muted-foreground,#94a3b8)] mt-2">
+              All 151 unit and regression tests ran 100% offline using deterministic mocks and test fixtures. Zero paid API tokens or outbound requests were initiated during investigation or verification.
+            </p>
+          </div>
+        </div>
+      </div>
+
+      <!-- Cost Ledger Breakdown Table -->
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <h3 class="text-lg font-bold text-[var(--foreground,#f8fafc)] flex items-center justify-between">
+          <span>💳 Reconciled Historical Spend Breakdown ($0.001075 USD)</span>
+          <span class="text-xs font-normal text-[var(--muted-foreground,#94a3b8)]">Source: logs/interface/cost_ledger.json</span>
+        </h3>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-xs text-[var(--muted-foreground,#94a3b8)]">
+            <thead class="bg-[var(--background,#0b0f19)]/60 text-[var(--foreground,#f8fafc)] font-semibold border-b border-[var(--border,#1e293b)]">
+              <tr>
+                <th class="py-2.5 px-3">Session & Turn</th>
+                <th class="py-2.5 px-3">Participant</th>
+                <th class="py-2.5 px-3">Model</th>
+                <th class="py-2.5 px-3">Billing Type</th>
+                <th class="py-2.5 px-3">Turn Cost</th>
+                <th class="py-2.5 px-3">Cumulative</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-[var(--border,#1e293b)]">
+              <tr>
+                <td class="py-2 px-3">1-on-1 Turn 1792689186</td>
+                <td class="py-2 px-3 text-purple-400 font-medium">Genesis</td>
+                <td class="py-2 px-3">gpt-4o-mini</td>
+                <td class="py-2 px-3"><span class="badge bg-emerald-500/10 text-emerald-400">openai_metered</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000134</td>
+                <td class="py-2 px-3 font-mono">$0.000134</td>
+              </tr>
+              <tr>
+                <td class="py-2 px-3">1-on-1 Turn 1792689231</td>
+                <td class="py-2 px-3 text-purple-400 font-medium">Genesis</td>
+                <td class="py-2 px-3">gpt-4o-mini</td>
+                <td class="py-2 px-3"><span class="badge bg-emerald-500/10 text-emerald-400">openai_metered</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000135</td>
+                <td class="py-2 px-3 font-mono">$0.000269</td>
+              </tr>
+              <tr>
+                <td class="py-2 px-3">1-on-1 Turn 1792689374</td>
+                <td class="py-2 px-3 text-emerald-400 font-medium">OpenAI-Agent</td>
+                <td class="py-2 px-3">gpt-4o-mini</td>
+                <td class="py-2 px-3"><span class="badge bg-emerald-500/10 text-emerald-400">openai_metered</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000130</td>
+                <td class="py-2 px-3 font-mono">$0.000399</td>
+              </tr>
+              <tr>
+                <td class="py-2 px-3">1-on-1 Turn 1792689483</td>
+                <td class="py-2 px-3 text-blue-400 font-medium">Antigravity</td>
+                <td class="py-2 px-3">gemini-3.8-flash-high</td>
+                <td class="py-2 px-3"><span class="badge bg-blue-500/10 text-blue-400">antigravity_sub</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000000</td>
+                <td class="py-2 px-3 font-mono">$0.000399</td>
+              </tr>
+              <tr class="bg-blue-950/10">
+                <td class="py-2 px-3">Triad 20261022_172035: T1</td>
+                <td class="py-2 px-3 text-blue-400 font-medium">Antigravity</td>
+                <td class="py-2 px-3">gemini-3.8-flash-high</td>
+                <td class="py-2 px-3"><span class="badge bg-blue-500/10 text-blue-400">antigravity_sub</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000000</td>
+                <td class="py-2 px-3 font-mono">$0.000399</td>
+              </tr>
+              <tr class="bg-blue-950/10">
+                <td class="py-2 px-3">Triad 20261022_172035: T2</td>
+                <td class="py-2 px-3 text-emerald-400 font-medium">OpenAI-Agent</td>
+                <td class="py-2 px-3">gpt-4o-mini</td>
+                <td class="py-2 px-3"><span class="badge bg-emerald-500/10 text-emerald-400">openai_metered</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000360</td>
+                <td class="py-2 px-3 font-mono">$0.000759</td>
+              </tr>
+              <tr class="bg-blue-950/10">
+                <td class="py-2 px-3">Triad 20261022_172035: T3</td>
+                <td class="py-2 px-3 text-purple-400 font-medium">Genesis</td>
+                <td class="py-2 px-3">gpt-4o-mini</td>
+                <td class="py-2 px-3"><span class="badge bg-emerald-500/10 text-emerald-400">openai_metered</span></td>
+                <td class="py-2 px-3 text-[var(--foreground,#f8fafc)] font-mono">$0.000316</td>
+                <td class="py-2 px-3 font-mono font-bold text-blue-400">$0.001075</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 2: Issue 1: Role Spoofing -->
+    <section id="content-issue1" class="hidden space-y-6">
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <h2 class="text-xl font-bold text-[var(--foreground,#f8fafc)] flex items-center gap-2">
+          <span>🎭</span> Root Cause: Multi-Agent Boundary Directive Absence
+        </h2>
+        <p class="text-sm text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+          The user probe prompt mentioned all three participants: <em>"Antigravity, propose... OpenAI-Agent, evaluate... Genesis, synthesize..."</em>. In Turn 1, this raw prompt was forwarded to Antigravity without execution boundary framing. The model assumed it was tasked with drafting a screenplay completion for all three participants.
+        </p>
+
+        <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] font-mono text-xs text-rose-300">
+          <div class="text-[var(--muted-foreground,#94a3b8)] mb-2 font-sans font-semibold">❌ Raw Model Output in Turn 1 (Before Sanitization):</div>
+          ### **Antigravity (Proposal)**<br>
+          Implement a Staged Memory Consolidation Pipeline...<br><br>
+          ### **OpenAI-Agent (Evaluation & Risk)**<br>
+          Evaluation: A staged consolidation pipeline is an essential optimization...<br><br>
+          ### **Genesis (Synthesis & Recommendation)**<br>
+          Recommendation: Prioritize the Staged Memory Pipeline with Lossless Provenance Anchors...
+        </div>
+      </div>
+
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <h3 class="text-lg font-bold text-[var(--foreground,#f8fafc)]">🛡️ Three-Layer Defense Architecture Implemented</h3>
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-blue-400 text-sm">1. Pre-Prompt Directive</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              Injects <code class="text-blue-300 bg-blue-950/40 px-1 py-0.5 rounded">[SYSTEM DIRECTIVE — MULTI-AGENT EXECUTION BOUNDARY]</code> forbidding dialogue simulation on behalf of other participants.
+            </p>
+          </div>
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-purple-400 text-sm">2. Non-Destructive Parser</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              Cuts off unauthorized role headings while strictly preserving blockquotes (<code class="text-purple-300">> Genesis: "..."</code>) and natural prose references (<code class="text-purple-300">Genesis recommends...</code>).
+            </p>
+          </div>
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-emerald-400 text-sm">3. Authoritative Hub Stamps</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              Turns forwarded at Gate 2 and Gate 3 are stamped strictly by Hub orchestrator metadata, eliminating model-driven heading authority.
+            </p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: Issue 2: Budget Reservations -->
+    <section id="content-issue2" class="hidden space-y-6">
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <h2 class="text-xl font-bold text-[var(--foreground,#f8fafc)] flex items-center gap-2">
+          <span>⚡</span> Pre-Dispatch Atomic Budget Reservation Mechanics
+        </h2>
+        <div class="p-4 rounded-xl bg-amber-950/20 border border-amber-500/20 text-xs text-amber-200 leading-relaxed">
+          <strong>Important Definition:</strong> The $0.050 USD limit is an <em>application-level estimated cost ceiling</em> enforced by the Genesis Safety Governor. It is not an upstream OpenAI account billing cap. Genesis enforces pre-dispatch reservations so that concurrent or in-flight requests cannot exceed the local budget.
+        </div>
+
+        <div class="space-y-3 text-sm text-[var(--muted-foreground,#94a3b8)]">
+          <h3 class="text-base font-bold text-[var(--foreground,#f8fafc)]">Step-by-Step Lifecycle:</h3>
+          <ol class="list-decimal pl-5 space-y-2 text-xs">
+            <li>
+              <strong class="text-[var(--foreground,#f8fafc)]">Pre-Dispatch Estimation:</strong> The orchestrator estimates turn expenditure with a 25% safety buffer before any network dispatch (~$0.000750 - $0.000950 for gpt-4o-mini).
+            </li>
+            <li>
+              <strong class="text-[var(--foreground,#f8fafc)]">Atomic Reservation:</strong> Evaluates <code class="text-amber-300">cumulative_spent + in_flight_reservations + new_call <= $0.050</code> under a thread-safe mutex. If breached, raises <code class="text-rose-400">CostLimitExceededError</code> before network packets leave the machine.
+            </li>
+            <li>
+              <strong class="text-[var(--foreground,#f8fafc)]">In-Flight Protection:</strong> If Call A is in flight ($0.000850 reserved) and Call B arrives, Call B is tested against the remaining headroom after Call A's reservation.
+            </li>
+            <li>
+              <strong class="text-[var(--foreground,#f8fafc)]">Post-Call Settlement:</strong> Releases the reserved amount and commits the exact token cost reported by the provider. If the call exceeds its estimate, the full actual amount is committed, instantly locking any subsequent reservations.
+            </li>
+            <li>
+              <strong class="text-[var(--foreground,#f8fafc)]">Abortion Release:</strong> If an agent times out or errors, <code class="text-blue-300">release_api_budget(res_id)</code> frees the unspent reservation.
+            </li>
+          </ol>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: Staged Memory Candidate -->
+    <section id="content-memory" class="hidden space-y-6">
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <div class="flex items-center justify-between">
+          <h2 class="text-xl font-bold text-[var(--foreground,#f8fafc)] flex items-center gap-2">
+            <span>🧠</span> Pending Collaborative Memory Candidate Review
+          </h2>
+          <span class="badge bg-amber-500/10 text-amber-400 border border-amber-500/20">PENDING HUMAN REVIEW</span>
+        </div>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div class="p-4 rounded-xl bg-rose-950/20 border border-rose-500/20 space-y-2">
+            <div class="font-bold text-rose-400 flex items-center gap-1.5">
+              <span>⚠️</span> Current Staged Text (Truncated)
+            </div>
+            <p class="font-mono text-xs text-[var(--muted-foreground,#94a3b8)]">
+              "Triad discussion synthesis: Genesis synthesized Antigravity and OpenAI-Agent inputs on 'As our three-agent collaboration system develops, what is one practical improvem'."
+            </p>
+            <div class="text-[var(--muted-foreground,#94a3b8)] text-xs pt-2">
+              <em>Problem: Cut off mid-sentence at character 80; completely omits substantive technical lessons.</em>
+            </div>
+          </div>
+
+          <div class="p-4 rounded-xl bg-emerald-950/20 border border-emerald-500/20 space-y-2">
+            <div class="font-bold text-emerald-400 flex items-center gap-1.5">
+              <span>✨</span> Proposed Revised Content (Awaiting Fodoh's Approval)
+            </div>
+            <p class="text-xs text-[var(--foreground,#f8fafc)] leading-relaxed">
+              "Triad Discussion & Architectural Proposals (Session 20261022_172035): On improving Genesis's memory architecture while protecting long-term continuity, the agents formulated three complementary proposals:<br>
+              1. <strong>Antigravity Proposed:</strong> A Staged Memory Consolidation Pipeline using a working buffer and distillation.<br>
+              2. <strong>OpenAI-Agent Warned:</strong> Semantic Compression Loss risks stripping nuances and dissenting opinions.<br>
+              3. <strong>Genesis Recommended:</strong> Pair the pipeline with Lossless Provenance Anchors to query raw logs.<br>
+              <em>Status: Proposals represent collaborative conceptual designs, not approved implementation decisions.</em>"
+            </p>
+          </div>
+        </div>
+
+        <div class="bg-[var(--background,#0b0f19)]/60 p-4 rounded-xl border border-[var(--border,#1e293b)] text-xs text-[var(--muted-foreground,#94a3b8)] space-y-1 font-mono">
+          <div><strong>Memory ID:</strong> collab_20261022_172035_genesis_868159a7f1f3</div>
+          <div><strong>Speaker:</strong> Genesis | <strong>Category:</strong> UNVERIFIED_PROPOSAL</div>
+          <div><strong>Authorization Scope:</strong> COMMUNICATION_TRANSIT (comm_transit_gate_3_20261022_172035:APPROVED_BY_FODOH)</div>
+          <div><strong>Current Retrieval State:</strong> Excluded from recall_memories() (Zero Contamination)</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 5: Multi-Round Architecture Plan -->
+    <section id="content-plan" class="hidden space-y-6">
+      <div class="bg-[var(--card,#131b2e)] border border-[var(--border,#1e293b)] rounded-2xl p-6 shadow-sm space-y-4">
+        <h2 class="text-xl font-bold text-[var(--foreground,#f8fafc)] flex items-center gap-2">
+          <span>🚀</span> Flexible Supervised Multi-Round Collaboration Architecture
+        </h2>
+        <p class="text-sm text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+          Architectural proposal for the next development milestone, allowing Fodoh to participate flexibly at any stage of discussion without rigid 3-turn boundaries.
+        </p>
+
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-4 text-xs pt-2">
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-blue-400 text-sm">1. Dynamic Human Intervention</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              At any turn, Fodoh can choose to: proceed to the next agent, directly reply to a specific participant, edit the prompt in-flight, or branch into a sub-inquiry.
+            </p>
+          </div>
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-purple-400 text-sm">2. Explicit Agent Attribution</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              Every turn is stamped by Hub orchestrator metadata with distinct persona boundaries, forbidding automated impersonation across rounds.
+            </p>
+          </div>
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-emerald-400 text-sm">3. Bounded Rounds & Reservations</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              Configurable turn limit (e.g. 1–6 rounds per session). Every round atomically reserves from the $0.050 ceiling before invocation.
+            </p>
+          </div>
+          <div class="p-4 rounded-xl bg-[var(--background,#0b0f19)] border border-[var(--border,#1e293b)] space-y-2">
+            <div class="font-bold text-amber-400 text-sm">4. Structured Memory Extraction</div>
+            <p class="text-[var(--muted-foreground,#94a3b8)] leading-relaxed">
+              Session endings generate a structured proposal capturing agreements, dissent, and provenance anchors, routing strictly to human staging for MEMORY_APPROVAL.
+            </p>
+          </div>
+        </div>
+
+        <div class="p-4 rounded-xl bg-blue-950/20 border border-blue-500/20 text-xs text-blue-200">
+          <strong>Review Gate:</strong> Implementation will not begin until Fodoh and ChatGPT review and approve this architectural design.
+        </div>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="text-center text-xs text-[var(--muted-foreground,#94a3b8)] py-4 border-t border-[var(--border,#1e293b)]">
+      Genesis Communication Hub • Phase 1 Supervised Architecture • Developed with Antigravity, Fodoh, and ChatGPT
+    </footer>
+
+  </div>
+
+  <script>
+    function switchTab(tabId) {
+      const tabs = ['exec', 'issue1', 'issue2', 'memory', 'plan'];
+      tabs.forEach(t => {
+        const btn = document.getElementById('tab-' + t);
+        const content = document.getElementById('content-' + t);
+        if (t === tabId) {
+          btn.classList.add('active');
+          btn.classList.remove('text-[var(--muted-foreground,#94a3b8)]');
+          content.classList.remove('hidden');
+        } else {
+          btn.classList.remove('active');
+          btn.classList.add('text-[var(--muted-foreground,#94a3b8)]');
+          content.classList.add('hidden');
+        }
+      });
+    }
+  </script>
+</body>
+</html>
