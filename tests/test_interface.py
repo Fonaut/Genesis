@@ -41,6 +41,7 @@ class TestCommunicationInterface(unittest.TestCase):
         # Isolate cost governor
         self.original_cumulative_cost = engine.governor.cumulative_cost_usd
         engine.governor.cumulative_cost_usd = 0.0
+        engine._active_reservations = {}
 
         # Isolate collaborative staging store to test directory
         self.original_staging_file = engine.collaborative_manager.staging_file
@@ -52,6 +53,7 @@ class TestCommunicationInterface(unittest.TestCase):
             stop_file.unlink()
 
     def tearDown(self):
+        engine._active_reservations = {}
         engine.governor.cumulative_cost_usd = self.original_cumulative_cost
         engine.collaborative_manager.staging_file = self.original_staging_file
         stop_file = PROJECT_ROOT / ".hub_stopped"
@@ -597,7 +599,7 @@ class TestCommunicationInterface(unittest.TestCase):
         with self.assertRaises(CostLimitExceededError) as ctx:
             engine.record_api_spending(0.002, "gpt-4o-mini", "openai_metered", "test_source")
 
-        self.assertIn("Hard spending ceiling exceeded", str(ctx.exception))
+        self.assertIn("exceeding the application estimated cost ceiling", str(ctx.exception))
         # Total should remain at 0.049 without leaking the failed transaction
         self.assertEqual(engine.governor.cumulative_cost_usd, 0.049)
 
@@ -642,6 +644,94 @@ class TestCommunicationInterface(unittest.TestCase):
         self.assertEqual(data["ledger_entries_count"], 2)
         self.assertEqual(data["ledger"][0]["provider"], "openai_metered")
         self.assertEqual(data["ledger"][1]["provider"], "antigravity_subscription")
+
+    def test_anti_spoofing_preserves_legitimate_quotes_and_natural_prose(self):
+        """Verify quotations, blockquotes, and natural-language statements referencing agents are NOT stripped."""
+        text_with_legitimate_references = (
+            "Here is my technical assessment of the system:\n\n"
+            "> Genesis: \"We should preserve context without creating context bloat.\"\n\n"
+            "Genesis recommends that we prioritize staged memory consolidation.\n"
+            "As OpenAI-Agent noted earlier, semantic compression loss is a real architectural risk.\n\n"
+            "### Genesis Architecture Review\n"
+            "The proposed pipeline provides strong modularity and prevents direct writes to long-term memory."
+        )
+
+        clean_text, detected_spoofs = engine.sanitize_agent_turn_output("Antigravity", text_with_legitimate_references)
+
+        self.assertEqual(detected_spoofs, [])
+        self.assertIn("> Genesis: \"We should preserve context", clean_text)
+        self.assertIn("Genesis recommends that we prioritize staged memory consolidation.", clean_text)
+        self.assertIn("As OpenAI-Agent noted earlier", clean_text)
+        self.assertIn("### Genesis Architecture Review", clean_text)
+
+    def test_pre_dispatch_budget_reservation_blocks_before_execution(self):
+        """Verify pre-dispatch reservation blocks an API call before it can be dispatched if it exceeds ceiling."""
+        from hub.phase1 import CostLimitExceededError
+
+        # Set spend close to $0.05 ceiling
+        engine.governor.cumulative_cost_usd = 0.0495
+
+        # Attempt to reserve $0.0008 (would push to $0.0503 > $0.050)
+        with self.assertRaises(CostLimitExceededError) as ctx:
+            engine.reserve_api_budget(0.0008, source="test_pre_dispatch")
+
+        self.assertIn("Pre-dispatch budget reservation denied", str(ctx.exception))
+        self.assertIn("Call blocked before API dispatch", str(ctx.exception))
+        # Verify no reservation was committed
+        self.assertEqual(engine.get_active_reservations_total(), 0.0)
+        self.assertEqual(engine.governor.cumulative_cost_usd, 0.0495)
+
+    def test_pre_dispatch_concurrent_reservations_block_overshoot(self):
+        """Verify concurrent in-flight reservations accurately block subsequent requests that would breach ceiling."""
+        from hub.phase1 import CostLimitExceededError
+
+        engine.governor.cumulative_cost_usd = 0.0490
+
+        # Thread 1 reserves $0.0006 (0.0490 + 0.0006 = 0.0496 <= 0.050) -> succeeds
+        res1 = engine.reserve_api_budget(0.0006, source="in_flight_1")
+        self.assertEqual(engine.get_active_reservations_total(), 0.0006)
+
+        # Thread 2 attempts to reserve $0.0006 (0.0490 + 0.0006 + 0.0006 = 0.0502 > 0.050) -> must fail!
+        with self.assertRaises(CostLimitExceededError) as ctx:
+            engine.reserve_api_budget(0.0006, source="in_flight_2")
+
+        self.assertIn("Pre-dispatch budget reservation denied", str(ctx.exception))
+
+        # Settle Thread 1 with actual cost $0.0004
+        engine.settle_api_budget(res1, 0.0004, "gpt-4o-mini", "openai_metered", "in_flight_1")
+        self.assertEqual(engine.get_active_reservations_total(), 0.0)
+        self.assertEqual(engine.governor.cumulative_cost_usd, 0.0494)
+
+    def test_in_flight_call_exceeding_estimate_settles_accurately(self):
+        """Verify that when an in-flight call slightly exceeds its estimate, actual cost is truthfully settled."""
+        res_id = engine.reserve_api_budget(0.0005, source="test_underestimate")
+        self.assertEqual(engine.get_active_reservations_total(), 0.0005)
+
+        # Actual cost finishes at 0.0007
+        final_cost = engine.settle_api_budget(res_id, 0.0007, "gpt-4o-mini", "openai_metered", "test_underestimate")
+        self.assertEqual(final_cost, 0.0007)
+        self.assertEqual(engine.get_active_reservations_total(), 0.0)
+        self.assertEqual(engine.governor.cumulative_cost_usd, 0.0007)
+
+    def test_release_budget_on_failure(self):
+        """Verify reservation is released and budget restored if an operation fails."""
+        res_id = engine.reserve_api_budget(0.0008, source="test_failure")
+        self.assertEqual(engine.get_active_reservations_total(), 0.0008)
+
+        engine.release_api_budget(res_id)
+        self.assertEqual(engine.get_active_reservations_total(), 0.0)
+        self.assertEqual(engine.governor.cumulative_cost_usd, 0.0)
+
+    def test_journal_endpoints_active(self):
+        """Verify Development Journal status and report endpoints return active session data."""
+        res = self.client.get("/api/journal/status")
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+        self.assertIn("status", data)
+        self.assertIn("activity", data)
+
+        res_rep = self.client.get("/api/journal/report")
+        self.assertEqual(res_rep.status_code, 200)
 
 
 if __name__ == "__main__":

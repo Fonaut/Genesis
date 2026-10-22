@@ -79,6 +79,7 @@ class CommunicationInterfaceEngine:
         self.cost_ledger_file = self.log_dir / "cost_ledger.json"
         self.max_cost_usd = max_cost_usd
         self._cost_lock = threading.Lock()
+        self._active_reservations: Dict[str, float] = {}
 
         # Core safety governor and journal manager
         self.governor = SafetyGovernor(max_turns=20, max_cost_usd=max_cost_usd)
@@ -172,6 +173,108 @@ class CommunicationInterfaceEngine:
 
         return round(running_total, 6)
 
+    def estimate_pre_dispatch_cost(
+        self,
+        recipient: str,
+        is_live: bool,
+        prompt: str,
+        max_tokens: int = 800,
+    ) -> float:
+        """
+        Calculates a conservative pre-dispatch cost estimate for a prospective turn.
+        Used to atomically reserve budget BEFORE triggering external API network requests.
+        """
+        if not is_live:
+            return 0.0
+        if recipient == "Antigravity":
+            # Antigravity CLI operates via subscription tool execution (no per-turn metered API cost)
+            return 0.0
+        if recipient in ("Genesis", "OpenAI-Agent"):
+            # gpt-4o-mini rates: $0.150/1M input tokens, $0.600/1M output tokens
+            # Estimate prompt tokens + system context buffer (~700 tokens)
+            est_prompt_tokens = max(len(prompt) // 4 + 700, 1000)
+            est_output_tokens = max_tokens
+            est_cost = (est_prompt_tokens * 0.00000015) + (est_output_tokens * 0.00000060)
+            # Add 25% safety buffer to account for unexpected context density
+            return round(est_cost * 1.25, 6)
+        return 0.0
+
+    def get_active_reservations_total(self) -> float:
+        """Returns the total USD currently reserved by in-flight API requests."""
+        with self._cost_lock:
+            return round(sum(self._active_reservations.values()), 6)
+
+    def reserve_api_budget(
+        self,
+        estimated_cost_usd: float,
+        source: str,
+        session_id: Optional[str] = None,
+    ) -> str:
+        """
+        Atomically reserves spending budget BEFORE an API request is dispatched.
+        Evaluates cumulative spent + active in-flight reservations + proposed cost
+        against the application-level estimated cost ceiling ($0.050 USD).
+        """
+        import uuid
+        with self._cost_lock:
+            est_float = round(float(estimated_cost_usd or 0.0), 6)
+            in_flight = sum(self._active_reservations.values())
+            prospective_total = self.governor.cumulative_cost_usd + in_flight + est_float
+
+            if prospective_total > self.governor.max_cost_usd:
+                raise CostLimitExceededError(
+                    f"Pre-dispatch budget reservation denied: estimated ${est_float:.6f} USD for '{source}' "
+                    f"would push committed (${self.governor.cumulative_cost_usd:.6f}) + active in-flight "
+                    f"(${in_flight:.6f}) spending to ${prospective_total:.6f} USD, exceeding the application "
+                    f"estimated cost ceiling of ${self.governor.max_cost_usd:.5f} USD. Call blocked before API dispatch."
+                )
+
+            res_id = f"res_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
+            self._active_reservations[res_id] = est_float
+            return res_id
+
+    def settle_api_budget(
+        self,
+        reservation_id: str,
+        actual_cost_usd: float,
+        model: str,
+        provider: str,
+        source: str,
+        session_id: Optional[str] = None,
+        tokens_info: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """
+        Settles an active reservation with actual turn expenditure after execution completes.
+        Accounts for calls that exceeded or came under their conservative estimate.
+        """
+        with self._cost_lock:
+            reserved_amount = self._active_reservations.pop(reservation_id, 0.0)
+            actual_float = round(float(actual_cost_usd or 0.0), 6)
+
+            # Record actual cost into governor cumulative spending
+            self.governor.cumulative_cost_usd = round(self.governor.cumulative_cost_usd + actual_float, 6)
+
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cost_usd": actual_float,
+                "reserved_usd": reserved_amount,
+                "cumulative_cost_usd": self.governor.cumulative_cost_usd,
+                "active_reservations_usd": round(sum(self._active_reservations.values()), 6),
+                "model": model,
+                "provider": provider,  # "openai_metered" vs "antigravity_subscription"
+                "source": source,
+                "session_id": session_id,
+                "reservation_id": reservation_id,
+                "tokens": tokens_info or {},
+            }
+            self._append_cost_ledger_entry(entry)
+            return self.governor.cumulative_cost_usd
+
+    def release_api_budget(self, reservation_id: str) -> None:
+        """Releases an in-flight reservation if a turn failed, was rejected, or aborted."""
+        with self._cost_lock:
+            self._active_reservations.pop(reservation_id, None)
+
     def record_api_spending(
         self,
         cost_usd: float,
@@ -182,35 +285,23 @@ class CommunicationInterfaceEngine:
         tokens_info: Optional[Dict[str, Any]] = None,
     ) -> float:
         """
-        Thread-safe, atomic accounting method for tracking cumulative API spending
-        across both individual chat dispatches and multi-agent triad turns.
-        Enforces the $0.05 hard ceiling and distinguishes metered API billing from
-        subscription tool usage.
+        Direct atomic spending record method for tests or post-facto logging.
+        Atomically reserves and settles the specified cost.
         """
-        with self._cost_lock:
-            cost_float = float(cost_usd or 0.0)
-            if cost_float > 0:
-                prospective_total = self.governor.cumulative_cost_usd + cost_float
-                if prospective_total > self.governor.max_cost_usd:
-                    raise CostLimitExceededError(
-                        f"Hard spending ceiling exceeded: attempted ${cost_float:.6f} USD would push "
-                        f"cumulative spending to ${prospective_total:.6f} USD (hard ceiling: ${self.governor.max_cost_usd:.5f} USD). "
-                        "Execution halted immediately."
-                    )
-                self.governor.cumulative_cost_usd = round(prospective_total, 6)
-
-            entry = {
-                "timestamp": datetime.now(timezone.utc).isoformat(),
-                "cost_usd": round(cost_float, 6),
-                "cumulative_cost_usd": round(self.governor.cumulative_cost_usd, 6),
-                "model": model,
-                "provider": provider,  # "openai_metered" vs "antigravity_subscription"
-                "source": source,      # "individual_chat", "triad_turn_1", etc.
-                "session_id": session_id,
-                "tokens": tokens_info or {},
-            }
-            self._append_cost_ledger_entry(entry)
-            return self.governor.cumulative_cost_usd
+        res_id = self.reserve_api_budget(cost_usd, source=source, session_id=session_id)
+        try:
+            return self.settle_api_budget(
+                reservation_id=res_id,
+                actual_cost_usd=cost_usd,
+                model=model,
+                provider=provider,
+                source=source,
+                session_id=session_id,
+                tokens_info=tokens_info,
+            )
+        except Exception:
+            self.release_api_budget(res_id)
+            raise
 
     def _append_cost_ledger_entry(self, entry: Dict[str, Any]) -> None:
         """Appends a transaction entry to the persistent cost ledger."""
@@ -260,9 +351,9 @@ class CommunicationInterfaceEngine:
     def sanitize_agent_turn_output(self, speaker: str, text: str) -> Tuple[str, List[str]]:
         """
         Sanitizes raw model output to prevent agent role spoofing / response contamination.
-        If a model attempts to generate headers or dialogue for other participants,
-        the Hub cuts off the unauthorized trailing sections and returns only the
-        authoritative contribution of the current speaker.
+        Cuts off unauthorized sections where a model simulates other participants' turns,
+        while strictly preserving legitimate blockquotes, inline quotes, natural language
+        statements, and non-role markdown headings.
         """
         if not text:
             return "", []
@@ -274,20 +365,47 @@ class CommunicationInterfaceEngine:
         cleaned_lines = []
         spoofed_found = []
 
-        def is_participant_header(line: str, name: str) -> bool:
-            norm = line.strip().lower()
+        def is_participant_role_header(line: str, name: str) -> bool:
+            line_str = line.strip()
+            if not line_str:
+                return False
+            # Blockquotes are legitimate citations/references, never role masquerades
+            if line_str.startswith(">"):
+                return False
+            norm = line_str.lower()
             name_lower = name.lower()
             if name_lower not in norm:
                 return False
-            stripped = re.sub(r"^[#\s*\-_>\[\]]+", "", norm)
-            stripped = re.sub(r"[\s*\-_:\]]+$", "", stripped)
-            return stripped.startswith(name_lower)
+
+            # Must have structural heading indicator, bold turn prefix, or standalone label
+            is_heading = bool(re.match(r"^#{1,6}\s+", line_str))
+            is_bold_header = bool(re.match(r"^\*{2}[^*]+\*{2}:?\s*$", line_str))
+            is_standalone_label = bool(re.match(rf"^{re.escape(name_lower)}\s*(\([^)]+\))?\s*:\s*$", norm))
+
+            if not (is_heading or is_bold_header or is_standalone_label):
+                return False
+
+            clean = re.sub(r"^[#\s*\-_\[\]]+", "", norm)
+            clean = re.sub(r"[\s*\-_:\[\]]+$", "", clean)
+
+            if not clean.startswith(name_lower):
+                return False
+
+            remainder = clean[len(name_lower):].strip()
+            if not remainder:
+                return True
+
+            # Match parenthetical role or stage descriptors: (proposal), (evaluation & risk), (synthesis)
+            if re.match(r"^\([a-z0-9\s&/\-_]+\)$", remainder):
+                return True
+
+            return False
 
         for i, line in enumerate(lines):
             line_stripped = line.strip()
             found_other = None
             for other in other_participants:
-                if is_participant_header(line_stripped, other):
+                if is_participant_role_header(line_stripped, other):
                     found_other = other
                     break
 
@@ -296,7 +414,7 @@ class CommunicationInterfaceEngine:
                 # Check remaining lines for any additional spoofed participants
                 for rem_line in lines[i + 1:]:
                     for other in other_participants:
-                        if is_participant_header(rem_line.strip(), other) and other not in spoofed_found:
+                        if is_participant_role_header(rem_line.strip(), other) and other not in spoofed_found:
                             spoofed_found.append(other)
                 break
 
@@ -307,7 +425,7 @@ class CommunicationInterfaceEngine:
             cleaned_lines.pop()
 
         # Strip redundant leading self-header if present (e.g. ### **Antigravity (Proposal)**)
-        while cleaned_lines and (is_participant_header(cleaned_lines[0], speaker) or not cleaned_lines[0].strip()):
+        while cleaned_lines and (is_participant_role_header(cleaned_lines[0], speaker) or not cleaned_lines[0].strip()):
             cleaned_lines.pop(0)
 
         result_text = "\n".join(cleaned_lines).strip()
@@ -373,75 +491,87 @@ class CommunicationInterfaceEngine:
         turn_meta: Dict[str, Any] = {}
         cost_est = 0.0
 
-        if recipient == "Genesis":
-            agent = GenesisParticipant(is_live=is_live, max_tokens=800)
-            reply_text, thought, meta = agent.process_turn(
-                speaker=speaker,
-                incoming_message=clean_message,
-                formatted_history="(Individual chat session)",
-            )
-            reply_content = reply_text
-            thought_suppressed = thought
-            turn_meta = meta
-            model_name = meta.get("model", "gpt-4o-mini" if is_live else "synthetic-offline")
-            cost_est = meta.get("cost_usd_est", 0.0)
+        # Pre-dispatch atomic budget reservation
+        est_cost = self.estimate_pre_dispatch_cost(recipient, is_live, clean_message)
+        reservation_id = self.reserve_api_budget(
+            estimated_cost_usd=est_cost,
+            source=f"individual_chat_{recipient}",
+        )
 
-            if meta.get("is_truncated") or meta.get("finish_reason") == "length":
-                raise HubSafetyError(
-                    f"Genesis response was truncated by token limit. Cut-off: '{reply_content[-60:]}...'"
+        try:
+            if recipient == "Genesis":
+                agent = GenesisParticipant(is_live=is_live, max_tokens=800)
+                reply_text, thought, meta = agent.process_turn(
+                    speaker=speaker,
+                    incoming_message=clean_message,
+                    formatted_history="(Individual chat session)",
                 )
+                reply_content = reply_text
+                thought_suppressed = thought
+                turn_meta = meta
+                model_name = meta.get("model", "gpt-4o-mini" if is_live else "synthetic-offline")
+                cost_est = meta.get("cost_usd_est", 0.0)
 
-        elif recipient == "Antigravity":
-            if is_live:
-                agent = CliAntigravityAgent(timeout_sec=60.0)
-            else:
-                agent = MockAntigravityAgent(
-                    response_text=(
-                        f"Antigravity technical assessment for Fodoh: Received your instruction: '{clean_message}'. "
-                        "All filesystem, subprocess, and sandbox controls are verified."
+                if meta.get("is_truncated") or meta.get("finish_reason") == "length":
+                    raise HubSafetyError(
+                        f"Genesis response was truncated by token limit. Cut-off: '{reply_content[-60:]}...'"
                     )
+
+            elif recipient == "Antigravity":
+                if is_live:
+                    agent = CliAntigravityAgent(timeout_sec=60.0)
+                else:
+                    agent = MockAntigravityAgent(
+                        response_text=(
+                            f"Antigravity technical assessment for Fodoh: Received your instruction: '{clean_message}'. "
+                            "All filesystem, subprocess, and sandbox controls are verified."
+                        )
+                    )
+                ag_text, ag_thought, ag_meta = agent.send_probe(
+                    prompt=clean_message,
+                    sandbox=self.sandbox,
                 )
-            ag_text, ag_thought, ag_meta = agent.send_probe(
-                prompt=clean_message,
-                sandbox=self.sandbox,
-            )
-            reply_content = ag_text
-            thought_suppressed = ag_thought
-            turn_meta = ag_meta
-            model_name = ag_meta.get("model", "gemini-3.8-flash-high" if is_live else "mock-synthetic")
-            cost_est = ag_meta.get("cost_usd_est", 0.0)
+                reply_content = ag_text
+                thought_suppressed = ag_thought
+                turn_meta = ag_meta
+                model_name = ag_meta.get("model", "gemini-3.8-flash-high" if is_live else "mock-synthetic")
+                cost_est = ag_meta.get("cost_usd_est", 0.0)
 
-        elif recipient == "OpenAI-Agent":
-            agent = OpenAIAgentParticipant(is_live=is_live, max_tokens=800)
-            reply_text, meta = agent.process_turn(
-                speaker=speaker,
-                incoming_message=clean_message,
-                formatted_history="(Individual chat session)",
-            )
-            reply_content = reply_text
-            turn_meta = meta
-            model_name = meta.get("model", "gpt-4o-mini" if is_live else "synthetic-offline")
-            cost_est = meta.get("cost_usd_est", 0.0)
-
-            if meta.get("is_truncated") or meta.get("finish_reason") == "length":
-                raise HubSafetyError(
-                    f"OpenAI-Agent response was truncated by output token limit. Cut-off: '{reply_content[-60:]}...'"
+            elif recipient == "OpenAI-Agent":
+                agent = OpenAIAgentParticipant(is_live=is_live, max_tokens=800)
+                reply_text, meta = agent.process_turn(
+                    speaker=speaker,
+                    incoming_message=clean_message,
+                    formatted_history="(Individual chat session)",
                 )
+                reply_content = reply_text
+                turn_meta = meta
+                model_name = meta.get("model", "gpt-4o-mini" if is_live else "synthetic-offline")
+                cost_est = meta.get("cost_usd_est", 0.0)
 
-        else:
-            raise ValueError(f"Unknown recipient '{recipient}'. Must be 'Genesis', 'Antigravity', or 'OpenAI-Agent'.")
+                if meta.get("is_truncated") or meta.get("finish_reason") == "length":
+                    raise HubSafetyError(
+                        f"OpenAI-Agent response was truncated by output token limit. Cut-off: '{reply_content[-60:]}...'"
+                    )
+
+            else:
+                raise ValueError(f"Unknown recipient '{recipient}'. Must be 'Genesis', 'Antigravity', or 'OpenAI-Agent'.")
+
+            # Settle spending via unified thread-safe ledger
+            provider = "openai_metered" if recipient in ("Genesis", "OpenAI-Agent") else "antigravity_subscription"
+            self.settle_api_budget(
+                reservation_id=reservation_id,
+                actual_cost_usd=cost_est,
+                model=model_name,
+                provider=provider,
+                source=f"individual_chat_{recipient}",
+                tokens_info=turn_meta,
+            )
+        except Exception:
+            self.release_api_budget(reservation_id)
+            raise
 
         latency = time.perf_counter() - t_start
-
-        # Record and verify spending cap via unified thread-safe ledger
-        provider = "openai_metered" if recipient in ("Genesis", "OpenAI-Agent") else "antigravity_subscription"
-        self.record_api_spending(
-            cost_usd=cost_est,
-            model=model_name,
-            provider=provider,
-            source=f"individual_chat_{recipient}",
-            tokens_info=turn_meta,
-        )
 
         now_iso = datetime.now(timezone.utc).isoformat()
         turn_data = {
@@ -606,37 +736,47 @@ class CommunicationInterfaceEngine:
                 )
             )
 
-        # Apply strict multi-agent boundary directive to prevent role hallucination
-        framed_prompt = self.format_participant_prompt("Antigravity", payload)
-        ag_response, ag_thought, ag_meta = agent.send_probe(
-            prompt=framed_prompt,
-            sandbox=self.sandbox,
-        )
-        latency = time.perf_counter() - t0
+        # Pre-dispatch budget reservation
+        est_cost = self.estimate_pre_dispatch_cost("Antigravity", state.is_live, payload)
+        res_id = self.reserve_api_budget(est_cost, source="triad_turn_1", session_id=state.session_id)
 
-        if not ag_response or not ag_response.strip():
-            state.status = "FAILED"
-            state.error_message = "Antigravity returned an empty or whitespace-only reply."
-            state.pending_gate = None
-            self._save_triad_audit(state)
-            return
+        try:
+            # Apply strict multi-agent boundary directive to prevent role hallucination
+            framed_prompt = self.format_participant_prompt("Antigravity", payload)
+            ag_response, ag_thought, ag_meta = agent.send_probe(
+                prompt=framed_prompt,
+                sandbox=self.sandbox,
+            )
+            latency = time.perf_counter() - t0
 
-        # Sanitize agent response to detect and cut off any spoofed sections
-        clean_ag_response, spoofed_agents = self.sanitize_agent_turn_output("Antigravity", ag_response)
-        if spoofed_agents:
-            ag_meta["spoofed_sections_detected"] = spoofed_agents
-            ag_meta["sanitized"] = True
+            if not ag_response or not ag_response.strip():
+                state.status = "FAILED"
+                state.error_message = "Antigravity returned an empty or whitespace-only reply."
+                state.pending_gate = None
+                self._save_triad_audit(state)
+                self.release_api_budget(res_id)
+                return
 
-        cost = ag_meta.get("cost_usd_est", 0.0)
-        state.cumulative_cost_usd += cost
-        self.record_api_spending(
-            cost_usd=cost,
-            model=ag_meta.get("model", "gemini-3.8-flash-high" if state.is_live else "mock-synthetic"),
-            provider="antigravity_subscription",
-            source="triad_turn_1",
-            session_id=state.session_id,
-            tokens_info=ag_meta.get("usage", {}),
-        )
+            # Sanitize agent response to detect and cut off any spoofed sections
+            clean_ag_response, spoofed_agents = self.sanitize_agent_turn_output("Antigravity", ag_response)
+            if spoofed_agents:
+                ag_meta["spoofed_sections_detected"] = spoofed_agents
+                ag_meta["sanitized"] = True
+
+            cost = ag_meta.get("cost_usd_est", 0.0)
+            state.cumulative_cost_usd += cost
+            self.settle_api_budget(
+                reservation_id=res_id,
+                actual_cost_usd=cost,
+                model=ag_meta.get("model", "gemini-3.8-flash-high" if state.is_live else "mock-synthetic"),
+                provider="antigravity_subscription",
+                source="triad_turn_1",
+                session_id=state.session_id,
+                tokens_info=ag_meta.get("usage", {}),
+            )
+        except Exception:
+            self.release_api_budget(res_id)
+            raise
 
         turn_1 = {
             "turn_id": 1,
@@ -673,43 +813,55 @@ class CommunicationInterfaceEngine:
         t0 = time.perf_counter()
         agent = OpenAIAgentParticipant(is_live=state.is_live, max_tokens=800)
         framed_payload = self.format_participant_prompt("OpenAI-Agent", payload)
-        openai_reply, openai_meta = agent.process_turn(
-            speaker="Antigravity",
-            incoming_message=framed_payload,
-            formatted_history=f"[User Probe]: {state.probe_prompt}",
-        )
-        latency = time.perf_counter() - t0
 
-        if not openai_reply or not openai_reply.strip():
-            state.status = "FAILED"
-            state.error_message = "OpenAI-Agent returned an empty or whitespace-only reply."
-            state.pending_gate = None
-            self._save_triad_audit(state)
-            return
+        # Pre-dispatch budget reservation
+        est_cost = self.estimate_pre_dispatch_cost("OpenAI-Agent", state.is_live, payload, max_tokens=800)
+        res_id = self.reserve_api_budget(est_cost, source="triad_turn_2", session_id=state.session_id)
 
-        if openai_meta.get("is_truncated") or openai_meta.get("finish_reason") == "length":
-            state.status = "FAILED"
-            state.error_message = f"OpenAI-Agent response truncated by output token limit: '{openai_reply[-60:]}...'"
-            state.pending_gate = None
-            self._save_triad_audit(state)
-            return
+        try:
+            openai_reply, openai_meta = agent.process_turn(
+                speaker="Antigravity",
+                incoming_message=framed_payload,
+                formatted_history=f"[User Probe]: {state.probe_prompt}",
+            )
+            latency = time.perf_counter() - t0
 
-        # Sanitize agent response to detect and cut off any spoofed sections
-        clean_openai_reply, spoofed_agents = self.sanitize_agent_turn_output("OpenAI-Agent", openai_reply)
-        if spoofed_agents:
-            openai_meta["spoofed_sections_detected"] = spoofed_agents
-            openai_meta["sanitized"] = True
+            if not openai_reply or not openai_reply.strip():
+                state.status = "FAILED"
+                state.error_message = "OpenAI-Agent returned an empty or whitespace-only reply."
+                state.pending_gate = None
+                self._save_triad_audit(state)
+                self.release_api_budget(res_id)
+                return
 
-        cost = openai_meta.get("cost_usd_est", 0.0)
-        state.cumulative_cost_usd += cost
-        self.record_api_spending(
-            cost_usd=cost,
-            model=openai_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
-            provider="openai_metered",
-            source="triad_turn_2",
-            session_id=state.session_id,
-            tokens_info=openai_meta,
-        )
+            if openai_meta.get("is_truncated") or openai_meta.get("finish_reason") == "length":
+                state.status = "FAILED"
+                state.error_message = f"OpenAI-Agent response truncated by output token limit: '{openai_reply[-60:]}...'"
+                state.pending_gate = None
+                self._save_triad_audit(state)
+                self.release_api_budget(res_id)
+                return
+
+            # Sanitize agent response to detect and cut off any spoofed sections
+            clean_openai_reply, spoofed_agents = self.sanitize_agent_turn_output("OpenAI-Agent", openai_reply)
+            if spoofed_agents:
+                openai_meta["spoofed_sections_detected"] = spoofed_agents
+                openai_meta["sanitized"] = True
+
+            cost = openai_meta.get("cost_usd_est", 0.0)
+            state.cumulative_cost_usd += cost
+            self.settle_api_budget(
+                reservation_id=res_id,
+                actual_cost_usd=cost,
+                model=openai_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
+                provider="openai_metered",
+                source="triad_turn_2",
+                session_id=state.session_id,
+                tokens_info=openai_meta,
+            )
+        except Exception:
+            self.release_api_budget(res_id)
+            raise
 
         turn_2 = {
             "turn_id": 2,
@@ -756,42 +908,54 @@ class CommunicationInterfaceEngine:
             "Synthesize both perspectives from your role as AI companion and coordinator."
         )
         framed_genesis = self.format_participant_prompt("Genesis", genesis_incoming)
-        gen_reply, gen_thought, gen_meta = agent.process_turn(
-            speaker="OpenAI-Agent",
-            incoming_message=framed_genesis,
-            formatted_history=f"[User Probe]: {state.probe_prompt}",
-        )
-        latency = time.perf_counter() - t0
 
-        if not gen_reply or not gen_reply.strip():
-            state.status = "FAILED"
-            state.error_message = "Genesis returned an empty or whitespace-only reply."
-            state.pending_gate = None
-            self._save_triad_audit(state)
-            return
+        # Pre-dispatch budget reservation
+        est_cost = self.estimate_pre_dispatch_cost("Genesis", state.is_live, payload, max_tokens=800)
+        res_id = self.reserve_api_budget(est_cost, source="triad_turn_3", session_id=state.session_id)
 
-        if gen_meta.get("is_truncated") or gen_meta.get("finish_reason") == "length":
-            state.status = "FAILED"
-            state.error_message = f"Genesis response truncated by output token limit: '{gen_reply[-60:]}...'"
-            state.pending_gate = None
-            self._save_triad_audit(state)
-            return
+        try:
+            gen_reply, gen_thought, gen_meta = agent.process_turn(
+                speaker="OpenAI-Agent",
+                incoming_message=framed_genesis,
+                formatted_history=f"[User Probe]: {state.probe_prompt}",
+            )
+            latency = time.perf_counter() - t0
 
-        clean_gen_reply, spoofed_agents = self.sanitize_agent_turn_output("Genesis", gen_reply)
-        if spoofed_agents:
-            gen_meta["spoofed_sections_detected"] = spoofed_agents
-            gen_meta["sanitized"] = True
+            if not gen_reply or not gen_reply.strip():
+                state.status = "FAILED"
+                state.error_message = "Genesis returned an empty or whitespace-only reply."
+                state.pending_gate = None
+                self._save_triad_audit(state)
+                self.release_api_budget(res_id)
+                return
 
-        cost = gen_meta.get("cost_usd_est", 0.0)
-        state.cumulative_cost_usd += cost
-        self.record_api_spending(
-            cost_usd=cost,
-            model=gen_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
-            provider="openai_metered",
-            source="triad_turn_3",
-            session_id=state.session_id,
-            tokens_info=gen_meta,
-        )
+            if gen_meta.get("is_truncated") or gen_meta.get("finish_reason") == "length":
+                state.status = "FAILED"
+                state.error_message = f"Genesis response truncated by output token limit: '{gen_reply[-60:]}...'"
+                state.pending_gate = None
+                self._save_triad_audit(state)
+                self.release_api_budget(res_id)
+                return
+
+            clean_gen_reply, spoofed_agents = self.sanitize_agent_turn_output("Genesis", gen_reply)
+            if spoofed_agents:
+                gen_meta["spoofed_sections_detected"] = spoofed_agents
+                gen_meta["sanitized"] = True
+
+            cost = gen_meta.get("cost_usd_est", 0.0)
+            state.cumulative_cost_usd += cost
+            self.settle_api_budget(
+                reservation_id=res_id,
+                actual_cost_usd=cost,
+                model=gen_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
+                provider="openai_metered",
+                source="triad_turn_3",
+                session_id=state.session_id,
+                tokens_info=gen_meta,
+            )
+        except Exception:
+            self.release_api_budget(res_id)
+            raise
 
         turn_3 = {
             "turn_id": 3,
@@ -813,9 +977,17 @@ class CommunicationInterfaceEngine:
         # Stage candidate collaborative synthesis memory into review queue as UNVERIFIED_PROPOSAL
         # (Separating communication transit gate from long-term memory approval)
         try:
-            prompt_snip = state.probe_prompt[:80].replace("\n", " ")
+            # Capture substantive proposal summary without premature truncation
+            synthesis_first_para = clean_gen_reply.split("\n\n")[0].strip() if clean_gen_reply else ""
+            if len(synthesis_first_para) > 280:
+                synthesis_first_para = synthesis_first_para[:277] + "..."
+
+            proposed_content = (
+                f"Triad Discussion Proposal: On '{state.probe_prompt}', Genesis synthesized multi-agent inputs: "
+                f"{synthesis_first_para}"
+            )
             self.collaborative_manager.propose_memory(
-                content=f"Triad discussion synthesis: Genesis synthesized Antigravity and OpenAI-Agent inputs on '{prompt_snip}'.",
+                content=proposed_content,
                 speaker="Genesis",
                 category=MemoryCategory.UNVERIFIED_PROPOSAL.value,
                 session_id=state.session_id,

@@ -99,6 +99,7 @@ async def get_status():
         "max_cost_usd": engine.max_cost_usd,
         "cumulative_cost_usd": round(engine.governor.cumulative_cost_usd, 6),
         "metered_api_cost_usd": engine.get_metered_cost_usd(),
+        "active_reservations_usd": engine.get_active_reservations_total(),
         "sandbox_status": sandbox_label,
         "sandbox_path": str(engine.sandbox.sandbox_path),
         "is_live_active": triad.is_live if triad else False,
@@ -129,6 +130,7 @@ async def get_cost_ledger():
         "max_cost_usd": engine.max_cost_usd,
         "cumulative_cost_usd": round(engine.governor.cumulative_cost_usd, 6),
         "metered_cost_usd": engine.get_metered_cost_usd(),
+        "active_reservations_usd": engine.get_active_reservations_total(),
         "ledger_entries_count": len(ledger),
         "ledger": ledger,
     }
