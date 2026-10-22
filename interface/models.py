@@ -68,4 +68,6 @@ class MemoryProposeRequest(BaseModel):
     turn_id: Optional[int] = Field(default=None, description="Source turn index")
     transcript_path: Optional[str] = Field(default=None, description="Path to original transcript")
     authorization_record: Optional[str] = Field(default=None, description="Backend gate authorization record")
+    authorization_scope: Optional[str] = Field(default=None, description="Authorization scope ('COMMUNICATION_TRANSIT' or 'MEMORY_APPROVAL')")
+    is_synthetic: bool = Field(default=False, description="Whether the conversation was synthetic offline")
     rationale: Optional[str] = Field(default="", description="Why this memory is significant")

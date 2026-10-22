@@ -127,6 +127,10 @@
               <span class="gov-val" id="cumulativeCostVal">$0.000000</span>
             </div>
             <div class="gov-row">
+              <span>Billing Audit:</span>
+              <span class="gov-val" id="billingBreakdownVal" style="font-size: 0.72rem; color: #94a3b8;">Metered: $0.000000</span>
+            </div>
+            <div class="gov-row">
               <span>Sandbox Profile:</span>
               <span class="gov-badge-verified" id="sandboxProfileVal">Seatbelt Active</span>
             </div>
@@ -226,7 +230,7 @@
 
     <!-- Collaborative Memory Staging & Review Queue Modal -->
     <div class="modal-backdrop" id="memoryModal" style="display:none;">
-      <div class="modal-card" style="max-width: 720px; width: 90%;">
+      <div class="modal-card" style="max-width: 760px; width: 92%;">
         <div class="modal-header">
           <h3>🧠 Collaborative Memory Staging & Review Queue</h3>
           <button class="modal-close" id="btnCloseMemoryModal">&times;</button>
@@ -234,6 +238,31 @@
         <div class="modal-body" id="memoryModalBody" style="max-height: 480px; overflow-y: auto;">
           Loading staged memories...
         </div>
+
+        <!-- Retrieval Isolation Verification Sandbox -->
+        <div style="padding: 14px 20px; background: #0f172a; border-top: 1px solid #334155;">
+          <div style="font-size:0.8rem; font-weight:700; color:#38bdf8; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center;">
+            <span>🔍 Memory Retrieval Isolation Verification Sandbox</span>
+            <span style="font-size:0.7rem; color:#94a3b8;">Offline Isolation Check</span>
+          </div>
+          <div style="display:flex; gap:8px;">
+            <input type="text" id="retrievalQueryInput" placeholder="Enter query (e.g. 'deterministic hashing' or 'triad')..." style="flex:1; background:#1e293b; border:1px solid #334155; color:#f8fafc; padding:6px 10px; border-radius:6px; font-size:0.85rem;" />
+            <button class="btn btn-sm btn-primary" id="btnTestRetrieval" style="padding:6px 14px;">Run Recall Test</button>
+          </div>
+          <div id="retrievalResultsBox" style="margin-top:10px; display:none;">
+            <div style="display:grid; grid-template-columns: 1fr 1fr; gap:10px;">
+              <div style="background:#1e293b; padding:10px; border-radius:6px; border-left:3px solid #38bdf8;">
+                <div style="font-size:0.75rem; font-weight:700; color:#38bdf8;">Genesis Trusted Recall (include_synthetic=false)</div>
+                <div id="trustedRecallResults" style="font-size:0.75rem; color:#cbd5e1; margin-top:6px;"></div>
+              </div>
+              <div style="background:#1e293b; padding:10px; border-radius:6px; border-left:3px solid #eab308;">
+                <div style="font-size:0.75rem; font-weight:700; color:#facc15;">Isolated Test/Audit Recall (include_synthetic=true)</div>
+                <div id="testRecallResults" style="font-size:0.75rem; color:#cbd5e1; margin-top:6px;"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
         <div style="padding: 12px 20px; border-top: 1px solid #334155; display: flex; justify-content: space-between; align-items: center; background: #0b1120;">
           <button class="btn btn-sm btn-ghost" id="btnReconcileMemories" style="font-size:0.8rem;">🔄 Reconcile Consistency</button>
           <button class="btn btn-sm btn-outline" id="btnCloseMemoryModalFooter">Close</button>
@@ -242,6 +271,6 @@
     </div>
   </div>
 
-  <script src="/static/app.js"></script>
+  <script src="/static/app.js?v=20261022_v3_unmistakable"></script>
 </body>
 </html>

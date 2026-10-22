@@ -545,6 +545,10 @@ document.addEventListener("DOMContentLoaded", () => {
       if (data.cumulative_cost_usd !== undefined) {
         cumulativeCostVal.textContent = `$${data.cumulative_cost_usd.toFixed(6)}`;
       }
+      const billingBreakdownEl = document.getElementById("billingBreakdownVal");
+      if (billingBreakdownEl && data.metered_api_cost_usd !== undefined) {
+        billingBreakdownEl.textContent = `OpenAI: $${data.metered_api_cost_usd.toFixed(6)} | AG: Sub`;
+      }
 
       // 3. Cost Cap Ceiling from backend governor
       if (data.max_cost_usd !== undefined) {
@@ -585,42 +589,181 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnCloseMemoryModalFooter = document.getElementById("btnCloseMemoryModalFooter");
   const memoryModalBody = document.getElementById("memoryModalBody");
   const btnReconcileMemories = document.getElementById("btnReconcileMemories");
+  const btnTestRetrieval = document.getElementById("btnTestRetrieval");
+  const retrievalQueryInput = document.getElementById("retrievalQueryInput");
+  const retrievalResultsBox = document.getElementById("retrievalResultsBox");
+  const trustedRecallResults = document.getElementById("trustedRecallResults");
+  const testRecallResults = document.getElementById("testRecallResults");
+
+  window.lastLoadedMemories = [];
 
   async function loadStagingMemories() {
     memoryModalBody.innerHTML = "<p style='color:#94a3b8;'>Loading staged memories...</p>";
     try {
       const res = await fetch("/api/memories/staging");
       const items = await res.json();
+      window.lastLoadedMemories = items || [];
       if (!items || items.length === 0) {
         memoryModalBody.innerHTML = "<p style='color:#94a3b8; text-align:center; padding: 24px;'>No memories currently in staging store.</p>";
         return;
       }
 
-      let html = `<div style="display:flex; flex-direction:column; gap:12px;">`;
+      function formatMemoryTimestamp(ts) {
+        if (!ts) return "n/a";
+        try {
+          const d = new Date(ts);
+          if (!isNaN(d.getTime())) {
+            return d.toLocaleString(undefined, {
+              year: 'numeric', month: '2-digit', day: '2-digit',
+              hour: '2-digit', minute: '2-digit',
+              timeZoneName: 'short'
+            });
+          }
+        } catch (e) {}
+        return ts.slice(0, 19).replace("T", " ");
+      }
+
+      let html = `<div style="display:flex; flex-direction:column; gap:14px;">`;
       items.forEach((m) => {
         let badgeColor = "#38bdf8";
         if (m.status === "APPROVED") badgeColor = "#34d399";
         else if (m.status === "REJECTED") badgeColor = "#f87171";
         else if (m.status === "PENDING_REVIEW") badgeColor = "#fbbf24";
+        else if (m.status === "QUARANTINED") badgeColor = "#94a3b8";
+
+        const isSynthetic = Boolean(m.is_synthetic);
+        const cardBorderLeft = isSynthetic ? "4px solid #eab308" : "4px solid #38bdf8";
+
+        // 1. Provenance Banner
+        const synthBanner = isSynthetic
+          ? `
+            <div style="background: rgba(234, 179, 8, 0.18); border: 2px solid #eab308; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;">
+              <div style="display:flex; justify-content:space-between; align-items:center;">
+                <span style="color:#fbbf24; font-size:0.85rem; font-weight:800; letter-spacing:0.5px;">
+                  🧪 PROVENANCE: SYNTHETIC (OFFLINE TEST DATA)
+                </span>
+                <span style="background:#eab308; color:#0f172a; font-size:0.68rem; font-weight:800; padding:2px 8px; border-radius:4px; text-transform:uppercase;">
+                  Test Isolation Active
+                </span>
+              </div>
+              <p style="color:#fef08a; font-size:0.75rem; margin:6px 0 0 0; line-height:1.4;">
+                ⚠️ Generated during an offline supervised triad test scenario. Decoupled from Genesis's personal identity and companion memories. Isolated strictly from ordinary trusted knowledge recall.
+              </p>
+            </div>
+          ` : `
+            <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid #0284c7; border-radius: 6px; padding: 6px 12px; margin-bottom: 12px; font-size: 0.75rem; color: #38bdf8; font-weight:600;">
+              🌐 PROVENANCE: REAL MODEL CONVERSATION
+            </div>
+          `;
+
+        // 2. Authorization Scope (Decoupled from Approval Status)
+        const authRec = m.authorization_record || "None";
+        const isCommTransit = (m.authorization_scope === "COMMUNICATION_TRANSIT") ||
+                              (authRec.toLowerCase().includes("gate_1") || authRec.toLowerCase().includes("gate_2") || authRec.toLowerCase().includes("gate_3") || authRec.toLowerCase().includes("comm_"));
+        const isMemoryApproval = (m.authorization_scope === "MEMORY_APPROVAL") ||
+                                 (authRec.toLowerCase().startsWith("mem_approval_") || authRec.toLowerCase().startsWith("manual_review_"));
+
+        let scopeBox;
+        if (isCommTransit) {
+          scopeBox = `
+            <div style="background: #1e293b; border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #334155; border-left: 4px solid #38bdf8;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-weight:700; color:#94a3b8; text-transform:uppercase; font-size:0.72rem; letter-spacing:0.5px;">Authorization Scope:</span>
+                <span style="background:rgba(56, 189, 248, 0.25); color:#38bdf8; border:1px solid #0284c7; padding:2px 10px; border-radius:4px; font-weight:800; font-size:0.75rem;">
+                  📡 COMMUNICATION_TRANSIT ONLY
+                </span>
+              </div>
+              <div style="color:#cbd5e1; font-size:0.78rem; margin-bottom:6px;">
+                <strong>Transit Gate Checkpoint:</strong> <code>${authRec}</code>
+              </div>
+              <div style="background:rgba(239, 68, 68, 0.15); border:1px solid #ef4444; border-radius:6px; padding:8px 10px;">
+                <div style="color:#fca5a5; font-size:0.75rem; font-weight:700;">
+                  ⚠️ TRANSIT APPROVAL ONLY — NOT A MEMORY APPROVAL
+                </div>
+                <div style="color:#fecaca; font-size:0.73rem; margin-top:2px; line-height:1.4;">
+                  The reference <code>${authRec}</code> records that Fodoh approved Gate 3 solely to <strong>forward an inter-agent turn</strong> during test execution. It granted transit permission only; it did <strong>NOT</strong> authorize permanent storage, architectural consensus, or memory promotion.
+                </div>
+              </div>
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px solid #334155; font-size:0.75rem;">
+                <span style="color:#94a3b8;">Human Memory Authorization:</span>
+                <span style="color:#fbbf24; font-weight:700;">⏳ Awaiting Human MEMORY_APPROVAL Decision</span>
+              </div>
+            </div>
+          `;
+        } else if (isMemoryApproval) {
+          scopeBox = `
+            <div style="background: #1e293b; border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #334155; border-left: 4px solid #10b981;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-weight:700; color:#94a3b8; text-transform:uppercase; font-size:0.72rem; letter-spacing:0.5px;">Authorization Scope:</span>
+                <span style="background:rgba(34, 197, 94, 0.25); color:#4ade80; border:1px solid #059669; padding:2px 10px; border-radius:4px; font-weight:800; font-size:0.75rem;">
+                  🔒 MEMORY_APPROVAL (HUMAN RATIFIED)
+                </span>
+              </div>
+              <div style="color:#cbd5e1; font-size:0.78rem; margin-bottom:4px;">
+                <strong>Dedicated Memory Decision Event:</strong> <code>${authRec}</code>
+              </div>
+              <div style="color:#a7f3d0; font-size:0.73rem; line-height:1.4;">
+                ✅ Explicitly reviewed and authorized by <strong>${m.reviewed_by || "Fodoh"}</strong> via dedicated human memory approval.
+              </div>
+            </div>
+          `;
+        } else {
+          scopeBox = `
+            <div style="background: #1e293b; border-radius: 8px; padding: 12px; margin-bottom: 12px; border: 1px solid #334155; border-left: 4px solid #f59e0b;">
+              <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px;">
+                <span style="font-weight:700; color:#94a3b8; text-transform:uppercase; font-size:0.72rem; letter-spacing:0.5px;">Authorization Scope:</span>
+                <span style="background:rgba(251, 191, 36, 0.25); color:#fbbf24; border:1px solid #f59e0b; padding:2px 10px; border-radius:4px; font-weight:800; font-size:0.75rem;">
+                  ⏳ AWAITING MEMORY_APPROVAL
+                </span>
+              </div>
+              <div style="color:#94a3b8; font-size:0.73rem; line-height:1.4;">
+                Candidate memory proposed during agent interaction. Awaiting explicit human review and authorization.
+              </div>
+            </div>
+          `;
+        }
+
+        // 3. Exact Proposed Memory Text
+        const contentBox = `
+          <div style="background:#0b1120; padding:12px; border-radius:8px; margin:10px 0; border:1px solid #38bdf8; border-left:4px solid #38bdf8;">
+            <div style="font-size:0.72rem; color:#38bdf8; font-weight:800; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:4px;">
+              📝 EXACT PROPOSED MEMORY TEXT (Inspect Before Decision):
+            </div>
+            <p style="color:#f8fafc; font-size:0.95rem; margin:0; line-height:1.45; font-weight:500;">
+              "${m.content}"
+            </p>
+          </div>
+        `;
 
         html += `
-          <div style="background:#0f172a; padding:14px; border-radius:8px; border:1px solid #334155;" data-mem-id="${m.memory_id}">
-            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <div style="background:#0f172a; padding:16px; border-radius:8px; border:1px solid #334155; border-left:${cardBorderLeft};" data-mem-id="${m.memory_id}">
+            ${synthBanner}
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
               <div>
-                <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:2px 8px; border-radius:4px; font-size:0.75rem; font-weight:600;">${m.category}</span>
-                <span style="margin-left:6px; font-size:0.8rem; color:#94a3b8;">Speaker: <strong>${m.speaker}</strong></span>
-                <span style="margin-left:6px; font-size:0.75rem; color:#64748b;">${(m.timestamp || "").slice(0, 10)}</span>
+                <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:700;">${m.category}</span>
+                ${isSynthetic ? `<span style="margin-left:6px; background:#eab308; color:#0f172a; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:800; letter-spacing:0.3px;">🧪 SYNTHETIC (OFFLINE)</span>` : `<span style="margin-left:6px; background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:700;">🌐 LIVE MODEL DIALOGUE</span>`}
+                <span style="margin-left:8px; font-size:0.8rem; color:#94a3b8;">Speaker: <strong>${m.speaker}</strong></span>
+                <span style="margin-left:8px; font-size:0.75rem; color:#64748b;" title="ISO: ${m.timestamp}">🕒 ${formatMemoryTimestamp(m.timestamp)}</span>
               </div>
-              <span style="border:1px solid ${badgeColor}; color:${badgeColor}; padding:2px 8px; border-radius:12px; font-size:0.7rem; font-weight:bold;">${m.status}</span>
+              <span style="border:2px solid ${badgeColor}; color:${badgeColor}; background:rgba(0,0,0,0.3); padding:3px 10px; border-radius:12px; font-size:0.72rem; font-weight:800;">${m.status}</span>
             </div>
-            <p style="color:#f1f5f9; font-size:0.95rem; margin:0 0 10px 0; line-height:1.4;">${m.content}</p>
-            ${m.authorization_record ? `<div style="font-size:0.75rem; color:#64748b; margin-bottom:8px;">🔒 Auth: <code>${m.authorization_record}</code></div>` : ""}
-            <div style="display:flex; gap:8px; justify-content:flex-end;">
+            ${scopeBox}
+            ${contentBox}
+            <div style="display:flex; gap:8px; justify-content:flex-end; align-items:center; margin-top:8px;">
               ${m.status === "PENDING_REVIEW" ? `
-                <button class="btn btn-sm btn-outline" style="color:#34d399; border-color:#059669;" onclick="handleMemoryAction('${m.memory_id}', 'approve')">✅ Approve</button>
-                <button class="btn btn-sm btn-outline" style="color:#f87171; border-color:#dc2626;" onclick="handleMemoryAction('${m.memory_id}', 'reject')">❌ Reject</button>
+                <button class="btn btn-sm btn-outline" style="color:#34d399; border-color:#059669; font-weight:700;" onclick="handleMemoryAction('${m.memory_id}', 'approve')">
+                  ${isSynthetic ? "🧪 Test-Approve Memory (Isolated Retrieval)" : "✅ Approve Decision"}
+                </button>
+                <button class="btn btn-sm btn-outline" style="color:#38bdf8; border-color:#0284c7;" onclick="handleMemoryEdit('${m.memory_id}', \`${m.content.replace(/`/g, '\\`')}\`)">
+                  ✏️ Edit & Approve
+                </button>
+                <button class="btn btn-sm btn-outline" style="color:#f87171; border-color:#dc2626;" onclick="handleMemoryAction('${m.memory_id}', 'reject')">
+                  ❌ Reject
+                </button>
               ` : ""}
-              <button class="btn btn-sm btn-ghost" style="color:#94a3b8; font-size:0.75rem;" onclick="handleMemoryAction('${m.memory_id}', 'delete')">🗑️ Delete</button>
+              <button class="btn btn-sm btn-ghost" style="color:#94a3b8; font-size:0.75rem;" onclick="handleMemoryAction('${m.memory_id}', 'delete')">
+                🗑️ Delete Record
+              </button>
             </div>
           </div>
         `;
@@ -633,6 +776,20 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   window.handleMemoryAction = async function(memoryId, action) {
+    if (action === "approve") {
+      const mem = (window.lastLoadedMemories || []).find(it => it.memory_id === memoryId);
+      const text = mem ? mem.content : "";
+      const isSynth = mem ? mem.is_synthetic : false;
+      const confirmPrompt =
+        `CONFIRM HUMAN MEMORY AUTHORIZATION\n\n` +
+        `Exact Proposed Memory Text:\n"${text}"\n\n` +
+        `Action: Formally record distinct MEMORY_APPROVAL authorization event.\n` +
+        (isSynth
+          ? `Provenance: SYNTHETIC (OFFLINE TEST DATA)\nIsolation: Retrievable strictly via isolated test path; NEVER enters Genesis's ordinary trusted memory.\n\n`
+          : `Provenance: REAL MODEL DIALOGUE\nPromotion: Retrievable via collaborative knowledge path.\n\n`) +
+        `Proceed with MEMORY_APPROVAL authorization?`;
+      if (!confirm(confirmPrompt)) return;
+    }
     try {
       const res = await fetch("/api/memories/staging/review", {
         method: "POST",
@@ -651,12 +808,83 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   };
 
+  window.handleMemoryEdit = async function(memoryId, currentContent) {
+    const newContent = prompt("Edit memory statement before approval:", currentContent);
+    if (newContent === null) return;
+    if (!newContent.trim()) {
+      alert("Memory content cannot be empty.");
+      return;
+    }
+    try {
+      const res = await fetch("/api/memories/staging/review", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ memory_id: memoryId, action: "edit", edited_content: newContent.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        alert(`Error: ${err.detail || "Edit action failed"}`);
+        return;
+      }
+      loadStagingMemories();
+      updateSystemStatus();
+    } catch (e) {
+      alert(`Network error: ${e.message}`);
+    }
+  };
+
   btnOpenMemoryModal.addEventListener("click", () => {
     memoryModal.style.display = "flex";
     loadStagingMemories();
   });
   btnCloseMemoryModal.addEventListener("click", () => { memoryModal.style.display = "none"; });
   btnCloseMemoryModalFooter.addEventListener("click", () => { memoryModal.style.display = "none"; });
+
+  if (btnTestRetrieval) {
+    btnTestRetrieval.addEventListener("click", async () => {
+      const q = (retrievalQueryInput.value || "").trim();
+      btnTestRetrieval.disabled = true;
+      btnTestRetrieval.textContent = "Testing...";
+      try {
+        const [trustedRes, testRes] = await Promise.all([
+          fetch(`/api/memories/recall?query=${encodeURIComponent(q)}&include_synthetic=false`),
+          fetch(`/api/memories/recall_test?query=${encodeURIComponent(q)}`),
+        ]);
+        const trustedData = await trustedRes.json();
+        const testData = await testRes.json();
+
+        retrievalResultsBox.style.display = "block";
+
+        if (trustedData.results && trustedData.results.length > 0) {
+          trustedRecallResults.innerHTML = trustedData.results.map(r => `
+            <div style="background:#0b1120; padding:6px 8px; border-radius:4px; margin-bottom:4px;">
+              <div style="font-weight:700; color:#38bdf8;">[${r.category}] (synthetic=${r.is_synthetic})</div>
+              <div>${r.content}</div>
+            </div>
+          `).join("");
+        } else {
+          trustedRecallResults.innerHTML = `<span style="color:#94a3b8; font-style:italic;">0 matches (synthetic memories strictly excluded from trusted recall)</span>`;
+        }
+
+        if (testData.results && testData.results.length > 0) {
+          testRecallResults.innerHTML = testData.results.map(r => `
+            <div style="background:#0b1120; padding:6px 8px; border-radius:4px; margin-bottom:4px;">
+              <div style="font-weight:700; color:#facc15;">[${r.category}] (synthetic=${r.is_synthetic})</div>
+              <div>${r.content}</div>
+              <div style="font-size:0.7rem; color:#94a3b8;">Auth: <code>${r.authorization_record || "None"}</code></div>
+            </div>
+          `).join("");
+        } else {
+          testRecallResults.innerHTML = `<span style="color:#94a3b8; font-style:italic;">0 matches in test recall</span>`;
+        }
+      } catch (err) {
+        alert(`Retrieval test failed: ${err.message}`);
+      } finally {
+        btnTestRetrieval.disabled = false;
+        btnTestRetrieval.textContent = "Run Recall Test";
+      }
+    });
+  }
 
   btnReconcileMemories.addEventListener("click", async () => {
     btnReconcileMemories.disabled = true;

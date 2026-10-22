@@ -118,8 +118,8 @@ class Brain:
             **kwargs,
         )
 
-    def recall_collaborative(self, query: str = "", limit: int = 3, active_only: bool = True, category: str = None):
-        """Recalls collaborative memories, by default strictly active recommendations."""
+    def recall_collaborative(self, query: str = "", limit: int = 3, active_only: bool = True, category: str = None, include_synthetic: bool = False):
+        """Recalls collaborative memories, by default strictly active non-synthetic recommendations."""
         if not hasattr(self, "collaborative") or self.collaborative is None:
             from memory.collaborative import CollaborativeMemoryManager
             self.collaborative = CollaborativeMemoryManager(chroma_client=getattr(self, "chroma_client", None))
@@ -128,4 +128,5 @@ class Brain:
             limit=limit,
             active_only=active_only,
             category=category,
+            include_synthetic=include_synthetic,
         )

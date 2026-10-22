@@ -6,6 +6,8 @@ approval gates, safety governor, and the Development Journal.
 
 import json
 import os
+import re
+import threading
 import time
 from dataclasses import dataclass, field, asdict
 from datetime import datetime, timezone
@@ -32,6 +34,7 @@ from memory.collaborative import (
     CollaborativeMemoryManager,
     MemoryCategory,
     ApprovalStatus,
+    AuthorizationScope,
     MemoryProvenance,
 )
 
@@ -73,7 +76,9 @@ class CommunicationInterfaceEngine:
         self.log_dir = log_dir or (PROJECT_ROOT / "logs" / "interface")
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.conversations_file = self.log_dir / "conversations.json"
+        self.cost_ledger_file = self.log_dir / "cost_ledger.json"
         self.max_cost_usd = max_cost_usd
+        self._cost_lock = threading.Lock()
 
         # Core safety governor and journal manager
         self.governor = SafetyGovernor(max_turns=20, max_cost_usd=max_cost_usd)
@@ -81,8 +86,232 @@ class CommunicationInterfaceEngine:
         self.sandbox = SandboxManager()
         self.collaborative_manager = CollaborativeMemoryManager()
 
+        # Reconcile historical cumulative spending across all logs
+        initial_reconciled_cost = self._reconcile_cumulative_costs()
+        self.governor.cumulative_cost_usd = initial_reconciled_cost
+
         # In-memory active triad session state
         self.active_triad_session: Optional[TriadSessionState] = None
+
+    # -------------------------------------------------------------------------
+    # Cost Accounting & Spending Ledger
+    # -------------------------------------------------------------------------
+
+    def _reconcile_cumulative_costs(self) -> float:
+        """
+        Scans conversations.json and all triad_*.json log files to reconcile
+        the true cumulative historical spending since server initialization.
+        Populates cost_ledger.json with historical transactions if not already present.
+        """
+        if self.cost_ledger_file.exists():
+            try:
+                ledger = json.loads(self.cost_ledger_file.read_text(encoding="utf-8"))
+                total = sum(float(e.get("cost_usd", 0.0)) for e in ledger)
+                return round(total, 6)
+            except Exception:
+                pass
+
+        # Reconstruct ledger from historical logs
+        raw_events: List[Dict[str, Any]] = []
+
+        if self.conversations_file.exists():
+            try:
+                convs = json.loads(self.conversations_file.read_text(encoding="utf-8"))
+                for c in convs:
+                    cost = float(c.get("cost_usd_est", 0.0))
+                    is_live = bool(c.get("metadata", {}).get("is_live", False))
+                    if cost > 0 or is_live:
+                        spk = c.get("speaker", "unknown")
+                        provider = "openai_metered" if spk in ("Genesis", "OpenAI-Agent") else "antigravity_subscription"
+                        raw_events.append({
+                            "timestamp": c.get("timestamp", ""),
+                            "cost_usd": round(cost, 6),
+                            "model": c.get("model", "unknown"),
+                            "provider": provider,
+                            "source": f"individual_chat_{spk}",
+                            "session_id": None,
+                            "tokens": c.get("metadata", {}),
+                        })
+            except Exception:
+                pass
+
+        for t_file in sorted(self.log_dir.glob("triad_*.json")):
+            try:
+                t_data = json.loads(t_file.read_text(encoding="utf-8"))
+                sid = t_data.get("session_id")
+                is_live = bool(t_data.get("is_live", False))
+                for turn in t_data.get("turns", []):
+                    cost = float(turn.get("cost_usd_est", 0.0))
+                    if cost > 0 or is_live:
+                        spk = turn.get("speaker", "unknown")
+                        provider = "openai_metered" if spk in ("Genesis", "OpenAI-Agent") else "antigravity_subscription"
+                        raw_events.append({
+                            "timestamp": turn.get("timestamp", ""),
+                            "cost_usd": round(cost, 6),
+                            "model": turn.get("model", "unknown"),
+                            "provider": provider,
+                            "source": f"triad_turn_{turn.get('turn_id')}",
+                            "session_id": sid,
+                            "tokens": turn.get("metadata", {}),
+                        })
+            except Exception:
+                pass
+
+        # Sort chronologically
+        raw_events.sort(key=lambda x: x.get("timestamp", ""))
+
+        running_total = 0.0
+        for ev in raw_events:
+            running_total += ev["cost_usd"]
+            ev["cumulative_cost_usd"] = round(running_total, 6)
+
+        try:
+            self.cost_ledger_file.write_text(json.dumps(raw_events, indent=2), encoding="utf-8")
+        except Exception:
+            pass
+
+        return round(running_total, 6)
+
+    def record_api_spending(
+        self,
+        cost_usd: float,
+        model: str,
+        provider: str,
+        source: str,
+        session_id: Optional[str] = None,
+        tokens_info: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """
+        Thread-safe, atomic accounting method for tracking cumulative API spending
+        across both individual chat dispatches and multi-agent triad turns.
+        Enforces the $0.05 hard ceiling and distinguishes metered API billing from
+        subscription tool usage.
+        """
+        with self._cost_lock:
+            cost_float = float(cost_usd or 0.0)
+            if cost_float > 0:
+                prospective_total = self.governor.cumulative_cost_usd + cost_float
+                if prospective_total > self.governor.max_cost_usd:
+                    raise CostLimitExceededError(
+                        f"Hard spending ceiling exceeded: attempted ${cost_float:.6f} USD would push "
+                        f"cumulative spending to ${prospective_total:.6f} USD (hard ceiling: ${self.governor.max_cost_usd:.5f} USD). "
+                        "Execution halted immediately."
+                    )
+                self.governor.cumulative_cost_usd = round(prospective_total, 6)
+
+            entry = {
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "cost_usd": round(cost_float, 6),
+                "cumulative_cost_usd": round(self.governor.cumulative_cost_usd, 6),
+                "model": model,
+                "provider": provider,  # "openai_metered" vs "antigravity_subscription"
+                "source": source,      # "individual_chat", "triad_turn_1", etc.
+                "session_id": session_id,
+                "tokens": tokens_info or {},
+            }
+            self._append_cost_ledger_entry(entry)
+            return self.governor.cumulative_cost_usd
+
+    def _append_cost_ledger_entry(self, entry: Dict[str, Any]) -> None:
+        """Appends a transaction entry to the persistent cost ledger."""
+        ledger = []
+        if self.cost_ledger_file.exists():
+            try:
+                ledger = json.loads(self.cost_ledger_file.read_text(encoding="utf-8"))
+            except Exception:
+                ledger = []
+        ledger.append(entry)
+        tmp_file = self.cost_ledger_file.with_suffix(".tmp")
+        tmp_file.write_text(json.dumps(ledger, indent=2), encoding="utf-8")
+        tmp_file.replace(self.cost_ledger_file)
+
+    def get_metered_cost_usd(self) -> float:
+        """Returns total metered OpenAI API spending tracked in the ledger."""
+        return round(self.governor.cumulative_cost_usd, 6)
+
+    # -------------------------------------------------------------------------
+    # Anti-Spoofing & Role Boundary Enforcement
+    # -------------------------------------------------------------------------
+
+    def format_participant_prompt(self, speaker: str, prompt: str) -> str:
+        """
+        Frames an incoming prompt with strict execution directives so the model
+        answers only for its own assigned persona and does not fabricate other turns.
+        """
+        roles = {
+            "Antigravity": "Technical Co-Architect & Execution Engine",
+            "OpenAI-Agent": "Analytical Specialist & Critical Challenger",
+            "Genesis": "Voice Companion & Orchestrator",
+        }
+        all_participants = ["Antigravity", "OpenAI-Agent", "Genesis"]
+        other_participants = [p for p in all_participants if p.lower() != speaker.lower()]
+        role = roles.get(speaker, "Collaborator")
+
+        return (
+            f"[SYSTEM DIRECTIVE — MULTI-AGENT EXECUTION BOUNDARY]\n"
+            f"You are speaking strictly as: {speaker} (Role: {role}).\n"
+            f"- Provide ONLY your own individual perspective and response.\n"
+            f"- DO NOT simulate, impersonate, quote, or generate dialogue on behalf of other participants ({', '.join(other_participants)}).\n"
+            f"- Subsequent turns will be executed by those agents independently. Any content you generate claiming to represent other agents will be rejected by the Hub.\n"
+            f"[END DIRECTIVE]\n\n"
+            f"{prompt}"
+        )
+
+    def sanitize_agent_turn_output(self, speaker: str, text: str) -> Tuple[str, List[str]]:
+        """
+        Sanitizes raw model output to prevent agent role spoofing / response contamination.
+        If a model attempts to generate headers or dialogue for other participants,
+        the Hub cuts off the unauthorized trailing sections and returns only the
+        authoritative contribution of the current speaker.
+        """
+        if not text:
+            return "", []
+
+        participants = ["Antigravity", "OpenAI-Agent", "Genesis"]
+        other_participants = [p for p in participants if p.lower() != speaker.lower()]
+
+        lines = text.split("\n")
+        cleaned_lines = []
+        spoofed_found = []
+
+        def is_participant_header(line: str, name: str) -> bool:
+            norm = line.strip().lower()
+            name_lower = name.lower()
+            if name_lower not in norm:
+                return False
+            stripped = re.sub(r"^[#\s*\-_>\[\]]+", "", norm)
+            stripped = re.sub(r"[\s*\-_:\]]+$", "", stripped)
+            return stripped.startswith(name_lower)
+
+        for i, line in enumerate(lines):
+            line_stripped = line.strip()
+            found_other = None
+            for other in other_participants:
+                if is_participant_header(line_stripped, other):
+                    found_other = other
+                    break
+
+            if found_other:
+                spoofed_found.append(found_other)
+                # Check remaining lines for any additional spoofed participants
+                for rem_line in lines[i + 1:]:
+                    for other in other_participants:
+                        if is_participant_header(rem_line.strip(), other) and other not in spoofed_found:
+                            spoofed_found.append(other)
+                break
+
+            cleaned_lines.append(line)
+
+        # Pop trailing horizontal rules and whitespace
+        while cleaned_lines and (re.match(r"^[-*_]{3,}$", cleaned_lines[-1].strip()) or not cleaned_lines[-1].strip()):
+            cleaned_lines.pop()
+
+        # Strip redundant leading self-header if present (e.g. ### **Antigravity (Proposal)**)
+        while cleaned_lines and (is_participant_header(cleaned_lines[0], speaker) or not cleaned_lines[0].strip()):
+            cleaned_lines.pop(0)
+
+        result_text = "\n".join(cleaned_lines).strip()
+        return result_text, sorted(list(set(spoofed_found)))
 
     # -------------------------------------------------------------------------
     # Kill Switch Controls
@@ -204,13 +433,15 @@ class CommunicationInterfaceEngine:
 
         latency = time.perf_counter() - t_start
 
-        # Record and verify spending cap
-        self.governor.cumulative_cost_usd += cost_est
-        if self.governor.cumulative_cost_usd > self.governor.max_cost_usd:
-            raise CostLimitExceededError(
-                f"Session cost ceiling exceeded: accumulated ${self.governor.cumulative_cost_usd:.5f} USD "
-                f"(hard limit: ${self.governor.max_cost_usd:.5f} USD)."
-            )
+        # Record and verify spending cap via unified thread-safe ledger
+        provider = "openai_metered" if recipient in ("Genesis", "OpenAI-Agent") else "antigravity_subscription"
+        self.record_api_spending(
+            cost_usd=cost_est,
+            model=model_name,
+            provider=provider,
+            source=f"individual_chat_{recipient}",
+            tokens_info=turn_meta,
+        )
 
         now_iso = datetime.now(timezone.utc).isoformat()
         turn_data = {
@@ -375,8 +606,10 @@ class CommunicationInterfaceEngine:
                 )
             )
 
+        # Apply strict multi-agent boundary directive to prevent role hallucination
+        framed_prompt = self.format_participant_prompt("Antigravity", payload)
         ag_response, ag_thought, ag_meta = agent.send_probe(
-            prompt=payload,
+            prompt=framed_prompt,
             sandbox=self.sandbox,
         )
         latency = time.perf_counter() - t0
@@ -388,28 +621,48 @@ class CommunicationInterfaceEngine:
             self._save_triad_audit(state)
             return
 
+        # Sanitize agent response to detect and cut off any spoofed sections
+        clean_ag_response, spoofed_agents = self.sanitize_agent_turn_output("Antigravity", ag_response)
+        if spoofed_agents:
+            ag_meta["spoofed_sections_detected"] = spoofed_agents
+            ag_meta["sanitized"] = True
+
         cost = ag_meta.get("cost_usd_est", 0.0)
         state.cumulative_cost_usd += cost
+        self.record_api_spending(
+            cost_usd=cost,
+            model=ag_meta.get("model", "gemini-3.8-flash-high" if state.is_live else "mock-synthetic"),
+            provider="antigravity_subscription",
+            source="triad_turn_1",
+            session_id=state.session_id,
+            tokens_info=ag_meta.get("usage", {}),
+        )
 
         turn_1 = {
             "turn_id": 1,
             "speaker": "Antigravity",
-            "content": ag_response,
+            "content": clean_ag_response,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "latency_sec": round(latency, 3),
             "cost_usd_est": round(cost, 6),
-            "tokens_estimated": (len(payload) + len(ag_response)) // 4,
+            "tokens_estimated": (len(payload) + len(clean_ag_response)) // 4,
             "model": ag_meta.get("model", "gemini-3.8-flash-high" if state.is_live else "mock-synthetic"),
             "metadata": ag_meta,
         }
         state.turns.append(turn_1)
 
-        # Prepare Gate 2 (Pass Antigravity reply to OpenAI-Agent)
+        # Prepare Gate 2 with Authoritative Hub Framing
+        hub_framed_payload = (
+            "============================================================\n"
+            "AUTHORITATIVE TURN 1: [Antigravity] (Technical Co-Architect)\n"
+            "============================================================\n"
+            f"{clean_ag_response}"
+        )
         next_gate = PendingApprovalGate(
             approval_id=f"gate_2_{state.session_id}",
             action_name="Pass Antigravity Response to OpenAI-Agent",
             recipient="OpenAI-Agent",
-            proposed_payload=f"[Antigravity]:\n{ag_response}",
+            proposed_payload=hub_framed_payload,
             created_at=datetime.now(timezone.utc).isoformat(),
         )
         state.pending_gate = next_gate
@@ -419,9 +672,10 @@ class CommunicationInterfaceEngine:
         """Executes Turn 2 (OpenAI-Agent) and sets up Gate 3."""
         t0 = time.perf_counter()
         agent = OpenAIAgentParticipant(is_live=state.is_live, max_tokens=800)
+        framed_payload = self.format_participant_prompt("OpenAI-Agent", payload)
         openai_reply, openai_meta = agent.process_turn(
             speaker="Antigravity",
-            incoming_message=payload,
+            incoming_message=framed_payload,
             formatted_history=f"[User Probe]: {state.probe_prompt}",
         )
         latency = time.perf_counter() - t0
@@ -440,24 +694,47 @@ class CommunicationInterfaceEngine:
             self._save_triad_audit(state)
             return
 
+        # Sanitize agent response to detect and cut off any spoofed sections
+        clean_openai_reply, spoofed_agents = self.sanitize_agent_turn_output("OpenAI-Agent", openai_reply)
+        if spoofed_agents:
+            openai_meta["spoofed_sections_detected"] = spoofed_agents
+            openai_meta["sanitized"] = True
+
         cost = openai_meta.get("cost_usd_est", 0.0)
         state.cumulative_cost_usd += cost
+        self.record_api_spending(
+            cost_usd=cost,
+            model=openai_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
+            provider="openai_metered",
+            source="triad_turn_2",
+            session_id=state.session_id,
+            tokens_info=openai_meta,
+        )
 
         turn_2 = {
             "turn_id": 2,
             "speaker": "OpenAI-Agent",
-            "content": openai_reply,
+            "content": clean_openai_reply,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "latency_sec": round(latency, 3),
             "cost_usd_est": round(cost, 6),
-            "tokens_estimated": (len(payload) + len(openai_reply)) // 4,
+            "tokens_estimated": (len(payload) + len(clean_openai_reply)) // 4,
             "model": openai_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
             "metadata": openai_meta,
         }
         state.turns.append(turn_2)
 
         ag_response = state.turns[0]["content"]
-        multi_agent_payload = f"[Antigravity]:\n{ag_response}\n\n[OpenAI-Agent]:\n{openai_reply}"
+        multi_agent_payload = (
+            "============================================================\n"
+            "AUTHORITATIVE TURN 1: [Antigravity] (Technical Co-Architect)\n"
+            "============================================================\n"
+            f"{ag_response}\n\n"
+            "============================================================\n"
+            "AUTHORITATIVE TURN 2: [OpenAI-Agent] (Analytical Specialist)\n"
+            "============================================================\n"
+            f"{clean_openai_reply}"
+        )
 
         # Prepare Gate 3 (Pass Multi-Agent Context to Genesis)
         next_gate = PendingApprovalGate(
@@ -474,12 +751,14 @@ class CommunicationInterfaceEngine:
         """Executes Turn 3 (Genesis) and finalizes the triad session."""
         t0 = time.perf_counter()
         agent = GenesisParticipant(is_live=state.is_live, max_tokens=800)
+        genesis_incoming = (
+            f"Antigravity and OpenAI-Agent have shared their perspectives:\n\n{payload}\n\n"
+            "Synthesize both perspectives from your role as AI companion and coordinator."
+        )
+        framed_genesis = self.format_participant_prompt("Genesis", genesis_incoming)
         gen_reply, gen_thought, gen_meta = agent.process_turn(
             speaker="OpenAI-Agent",
-            incoming_message=(
-                f"Antigravity and OpenAI-Agent have shared their perspectives:\n\n{payload}\n\n"
-                "How do you synthesize these perspectives from your role as AI companion and coordinator?"
-            ),
+            incoming_message=framed_genesis,
             formatted_history=f"[User Probe]: {state.probe_prompt}",
         )
         latency = time.perf_counter() - t0
@@ -498,17 +777,30 @@ class CommunicationInterfaceEngine:
             self._save_triad_audit(state)
             return
 
+        clean_gen_reply, spoofed_agents = self.sanitize_agent_turn_output("Genesis", gen_reply)
+        if spoofed_agents:
+            gen_meta["spoofed_sections_detected"] = spoofed_agents
+            gen_meta["sanitized"] = True
+
         cost = gen_meta.get("cost_usd_est", 0.0)
         state.cumulative_cost_usd += cost
+        self.record_api_spending(
+            cost_usd=cost,
+            model=gen_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
+            provider="openai_metered",
+            source="triad_turn_3",
+            session_id=state.session_id,
+            tokens_info=gen_meta,
+        )
 
         turn_3 = {
             "turn_id": 3,
             "speaker": "Genesis",
-            "content": gen_reply,
+            "content": clean_gen_reply,
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "latency_sec": round(latency, 3),
             "cost_usd_est": round(cost, 6),
-            "tokens_estimated": (len(payload) + len(gen_reply)) // 4,
+            "tokens_estimated": (len(payload) + len(clean_gen_reply)) // 4,
             "model": gen_meta.get("model", "gpt-4o-mini" if state.is_live else "synthetic-offline"),
             "metadata": gen_meta,
         }
@@ -518,18 +810,21 @@ class CommunicationInterfaceEngine:
         state.pending_gate = None
         audit_file = self._save_triad_audit(state)
 
-        # Stage candidate collaborative consensus memory into review queue (with Gate 3 authorization record)
+        # Stage candidate collaborative synthesis memory into review queue as UNVERIFIED_PROPOSAL
+        # (Separating communication transit gate from long-term memory approval)
         try:
             prompt_snip = state.probe_prompt[:80].replace("\n", " ")
             self.collaborative_manager.propose_memory(
-                content=f"Triad consensus reached: Genesis synthesized Antigravity and OpenAI-Agent inputs on '{prompt_snip}'.",
+                content=f"Triad discussion synthesis: Genesis synthesized Antigravity and OpenAI-Agent inputs on '{prompt_snip}'.",
                 speaker="Genesis",
-                category=MemoryCategory.APPROVED_DECISION.value,
+                category=MemoryCategory.UNVERIFIED_PROPOSAL.value,
                 session_id=state.session_id,
                 turn_id=3,
                 transcript_path=str(audit_file),
-                authorization_record=f"gate_3_{state.session_id}:APPROVED_BY_FODOH",
-                rationale="Supervised triad round completed successfully with all human approval checkpoints passed.",
+                authorization_record=f"comm_transit_gate_3_{state.session_id}:APPROVED_BY_FODOH",
+                authorization_scope=AuthorizationScope.COMMUNICATION_TRANSIT.value,
+                is_synthetic=(not state.is_live),
+                rationale="Supervised triad communication round completed. Synthesis generated by Genesis; pending explicit human memory review for consensus/decision approval.",
             )
         except Exception:
             pass

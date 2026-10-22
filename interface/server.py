@@ -4,6 +4,7 @@ Binds strictly to 127.0.0.1 (localhost).
 Integrates the Communication Hub, approval gates, kill switch, and Development Journal.
 """
 
+import json
 import os
 import sys
 from pathlib import Path
@@ -97,6 +98,7 @@ async def get_status():
         "kill_switch_active": engine.is_kill_switch_active,
         "max_cost_usd": engine.max_cost_usd,
         "cumulative_cost_usd": round(engine.governor.cumulative_cost_usd, 6),
+        "metered_api_cost_usd": engine.get_metered_cost_usd(),
         "sandbox_status": sandbox_label,
         "sandbox_path": str(engine.sandbox.sandbox_path),
         "is_live_active": triad.is_live if triad else False,
@@ -108,6 +110,27 @@ async def get_status():
             {"id": "Antigravity", "name": "Antigravity", "role": "Technical Co-Architect & Execution Engine", "color": "blue"},
             {"id": "OpenAI-Agent", "name": "OpenAI-Agent", "role": "Analytical Specialist & Critical Challenger", "color": "emerald"},
         ],
+    }
+
+
+@app.get("/api/costs/ledger")
+async def get_cost_ledger():
+    """
+    Returns the unified thread-safe API spending ledger, separating metered
+    OpenAI token billing from Antigravity subscription usage.
+    """
+    ledger = []
+    if engine.cost_ledger_file.exists():
+        try:
+            ledger = json.loads(engine.cost_ledger_file.read_text(encoding="utf-8"))
+        except Exception:
+            ledger = []
+    return {
+        "max_cost_usd": engine.max_cost_usd,
+        "cumulative_cost_usd": round(engine.governor.cumulative_cost_usd, 6),
+        "metered_cost_usd": engine.get_metered_cost_usd(),
+        "ledger_entries_count": len(ledger),
+        "ledger": ledger,
     }
 
 
@@ -263,6 +286,26 @@ async def get_staging_memories(status: Optional[str] = None):
     return items
 
 
+@app.post("/api/memories/staging/propose")
+async def propose_staging_memory(req: MemoryProposeRequest):
+    try:
+        prov = engine.collaborative_manager.propose_memory(
+            content=req.content,
+            speaker=req.speaker,
+            category=req.category,
+            session_id=req.session_id,
+            turn_id=req.turn_id,
+            transcript_path=req.transcript_path,
+            authorization_record=req.authorization_record,
+            authorization_scope=req.authorization_scope,
+            is_synthetic=req.is_synthetic,
+            rationale=req.rationale or "",
+        )
+        return {"status": "SUCCESS", "memory": prov.to_dict()}
+    except ValueError as err:
+        raise HTTPException(status_code=400, detail=str(err))
+
+
 @app.post("/api/memories/staging/review")
 async def review_staging_memory(req: MemoryReviewRequest):
     act = req.action.lower()
@@ -297,6 +340,52 @@ async def list_staging_backups():
 @app.post("/api/memories/staging/reconcile")
 async def reconcile_staging_consistency():
     return engine.collaborative_manager.reconcile_consistency()
+
+
+@app.get("/api/memories/recall")
+async def recall_memories_endpoint(
+    query: str = "",
+    limit: int = 5,
+    active_only: bool = True,
+    include_synthetic: bool = False,
+):
+    """
+    Standard collaborative memory retrieval endpoint (default Genesis path):
+    strictly excludes synthetic test data when include_synthetic=False.
+    """
+    results = engine.collaborative_manager.recall_memories(
+        query=query,
+        limit=limit,
+        active_only=active_only,
+        include_synthetic=include_synthetic,
+    )
+    return {
+        "query": query,
+        "count": len(results),
+        "active_only": active_only,
+        "include_synthetic": include_synthetic,
+        "results": results,
+    }
+
+
+@app.get("/api/memories/recall_test")
+async def recall_test_memories_endpoint(
+    query: str = "",
+    limit: int = 5,
+):
+    """
+    Isolated test-only memory retrieval endpoint:
+    retrieves approved synthetic test data without contaminating Genesis's trusted recall.
+    """
+    results = engine.collaborative_manager.recall_test_memories(
+        query=query,
+        limit=limit,
+    )
+    return {
+        "query": query,
+        "count": len(results),
+        "results": results,
+    }
 
 
 # -----------------------------------------------------------------------------

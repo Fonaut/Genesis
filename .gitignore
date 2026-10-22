@@ -18,6 +18,10 @@ ENV/
 
 # Memory, databases, and generated conversation logs
 memory/memories.json
+memory/collaborative_staging.json
+memory/collaborative_staging*.json
+memory/backups/
+memory/*.tmp
 conversation/history.json
 chroma_db/
 *.db

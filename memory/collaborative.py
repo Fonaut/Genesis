@@ -24,6 +24,7 @@ class MemoryCategory(str, Enum):
     VERIFIED_DISCOVERY = "VERIFIED_DISCOVERY"            # Empirically measured results, benchmark facts
     APPROVED_DECISION = "APPROVED_DECISION"              # Architectural decisions approved by Fodoh
     CONFIRMED_USER_PROFILE = "CONFIRMED_USER_PROFILE"    # Personal facts about Fodoh, strictly confirmed by Fodoh
+    HISTORICAL_TEST = "HISTORICAL_TEST"                  # Synthetic offline test runs, quarantined from live memory
 
 
 class ApprovalStatus(str, Enum):
@@ -31,6 +32,12 @@ class ApprovalStatus(str, Enum):
     APPROVED = "APPROVED"                # Formally authorized by Fodoh
     REJECTED = "REJECTED"                # Rejected by Fodoh (historical negative learning)
     SUPERSEDED = "SUPERSEDED"            # Replaced by a newer decision
+    QUARANTINED = "QUARANTINED"          # Isolated test/synthetic memory, excluded from review queue and active recall
+
+
+class AuthorizationScope(str, Enum):
+    COMMUNICATION_TRANSIT = "COMMUNICATION_TRANSIT"      # Forwarding agent messages / probes
+    MEMORY_APPROVAL = "MEMORY_APPROVAL"                  # Explicit user authorization of long-term memory
 
 
 @dataclass
@@ -46,8 +53,11 @@ class MemoryProvenance:
     rationale: str = ""
     transcript_path: Optional[str] = None
     authorization_record: Optional[str] = None
+    authorization_scope: Optional[str] = None
     is_active_recommendation: bool = False
     promoted_to_long_term: bool = False
+    is_synthetic: bool = False
+    approved_text: Optional[str] = None
     reviewed_at: Optional[str] = None
     reviewed_by: Optional[str] = None
 
@@ -59,11 +69,13 @@ class MemoryProvenance:
         return cls(**{k: v for k, v in data.items() if k in cls.__dataclass_fields__})
 
     def to_provenance_string(self) -> str:
-        """Formatted human-readable string representation."""
+        """Formatted human-readable string representation preserving timezone and synthetic indicators."""
         auth = f" | Auth: {self.authorization_record}" if self.authorization_record else ""
+        scope = f" | Scope: {self.authorization_scope}" if self.authorization_scope else ""
+        synth = " | SYNTHETIC" if self.is_synthetic else ""
         return (
-            f"[{self.category} | Speaker: {self.speaker} | Status: {self.status}"
-            f" | Session: {self.session_id}{auth} | {self.timestamp[:10]}] "
+            f"[{self.category}{synth} | Speaker: {self.speaker} | Status: {self.status}"
+            f" | Session: {self.session_id}{auth}{scope} | {self.timestamp}] "
             f"{self.content}"
         )
 
@@ -75,6 +87,12 @@ class CollaborativeMemorySecurityError(Exception):
 
 class OfflineDeterministicEmbeddingFunction:
     """100% offline, zero-network deterministic embedding function for ChromaDB."""
+    def __init__(self):
+        self.is_legacy = False
+
+    def name(self) -> str:
+        return "default"
+
     def __call__(self, input: List[str]) -> List[List[float]]:
         embeddings = []
         for text in input:
@@ -174,6 +192,8 @@ class CollaborativeMemoryManager:
         turn_id: Optional[int] = None,
         transcript_path: Optional[str] = None,
         authorization_record: Optional[str] = None,
+        authorization_scope: Optional[str] = None,
+        is_synthetic: bool = False,
         rationale: str = "",
     ) -> MemoryProvenance:
         """
@@ -181,9 +201,12 @@ class CollaborativeMemoryManager:
         
         Zero-Trust Invariants:
         1. Agent-generated content is ALWAYS untrusted. In-text claims of approval are ignored.
-        2. Status 'APPROVED' or 'APPROVED_DECISION' is assigned ONLY with a genuine backend authorization record.
-        3. External agents CANNOT create CONFIRMED_USER_PROFILE memories.
-        4. No writes to identity/self.json or legacy memories.json are permitted.
+        2. Scope Separation: Communication forwarding approvals (gate_1, gate_2, gate_3)
+           CANNOT authorize persistent memory. Memory approval requires distinct MEMORY_APPROVAL scope.
+        3. Never classify a memory as APPROVED_DECISION solely because an agent-to-agent message was forwarded.
+        4. Synthetic offline conversations are explicitly labeled and NEVER promoted by default.
+        5. External agents CANNOT create CONFIRMED_USER_PROFILE memories.
+        6. No writes to identity/self.json or legacy memories.json are permitted.
         """
         clean_content = content.strip()
         if not clean_content:
@@ -201,23 +224,60 @@ class CollaborativeMemoryManager:
         if category not in valid_categories:
             category = MemoryCategory.UNVERIFIED_PROPOSAL.value
 
-        # Status derivation: strictly authorization-derived
+        # Status derivation: strictly authorization-derived with scope validation
         status = ApprovalStatus.PENDING_REVIEW.value
         is_active = False
 
-        if authorization_record:
-            if "APPROVED" in authorization_record.upper():
-                # Legitimate backend gate authorization record
-                if category == MemoryCategory.APPROVED_DECISION.value or category == MemoryCategory.VERIFIED_DISCOVERY.value:
-                    status = ApprovalStatus.APPROVED.value
-                    is_active = True
-            elif "REJECTED" in authorization_record.upper():
+        if category == MemoryCategory.HISTORICAL_TEST.value:
+            # Historical test classification: explicitly quarantined from human review queue & active recall
+            status = ApprovalStatus.QUARANTINED.value
+            is_active = False
+            is_synthetic = True
+            if not rationale:
+                rationale = "Synthetic offline test event quarantined as historical test record."
+
+        # Identify communication transit gates
+        elif authorization_scope == AuthorizationScope.COMMUNICATION_TRANSIT.value or (
+            authorization_record and any(k in authorization_record.lower() for k in ["gate_1", "gate_2", "gate_3", "comm_gate", "comm_transit"])
+        ):
+            # COMMUNICATION TRANSIT RULE:
+            # Forwarding approvals can NEVER authorize a memory as an APPROVED_DECISION or APPROVED status.
+            authorization_scope = AuthorizationScope.COMMUNICATION_TRANSIT.value
+            if category == MemoryCategory.APPROVED_DECISION.value:
+                category = MemoryCategory.UNVERIFIED_PROPOSAL.value
+                if not rationale:
+                    rationale = "Communication forwarding approval cannot authorize persistent memory. Quarantined as unverified proposal."
+            if authorization_record and "REJECTED" in authorization_record.upper():
                 status = ApprovalStatus.REJECTED.value
+            else:
+                status = ApprovalStatus.PENDING_REVIEW.value
+            is_active = False
+
+        elif authorization_record:
+            # MEMORY APPROVAL RULE:
+            # Genuine memory approval requires memory scope (e.g. manual_review, mem_approval)
+            if authorization_scope == AuthorizationScope.MEMORY_APPROVAL.value or any(
+                authorization_record.startswith(p) for p in ["manual_review_", "mem_approval_"]
+            ):
+                if "APPROVED" in authorization_record.upper():
+                    if not is_synthetic:
+                        status = ApprovalStatus.APPROVED.value
+                        is_active = True
+                    else:
+                        # Synthetic responses are NOT promoted or active by default even with memory approval tag
+                        status = ApprovalStatus.PENDING_REVIEW.value
+                        is_active = False
+                elif "REJECTED" in authorization_record.upper():
+                    status = ApprovalStatus.REJECTED.value
+                    is_active = False
+            else:
+                # Any other authorization without memory scope cannot approve memory
+                status = ApprovalStatus.PENDING_REVIEW.value
                 is_active = False
 
         # Generate deterministic stable memory ID
         content_hash = hashlib.sha256(clean_content.encode("utf-8")).hexdigest()[:12]
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now().astimezone().isoformat()
         memory_id = f"collab_{session_id}_{speaker.lower()}_{content_hash}"
 
         provenance = MemoryProvenance(
@@ -232,8 +292,10 @@ class CollaborativeMemoryManager:
             rationale=rationale,
             transcript_path=transcript_path,
             authorization_record=authorization_record,
+            authorization_scope=authorization_scope,
             is_active_recommendation=is_active,
             promoted_to_long_term=False,
+            is_synthetic=is_synthetic,
         )
 
         # Save to staging JSON (with deduplication)
@@ -272,9 +334,9 @@ class CollaborativeMemoryManager:
     ) -> MemoryProvenance:
         """
         Applies Fodoh's explicit human review decision to a staged memory:
-        - 'approve': Promotes status to APPROVED, enables active recommendation.
+        - 'approve': Promotes status to APPROVED and category to APPROVED_DECISION, enables active recommendation.
         - 'reject': Marks status as REJECTED, retains as historical decision.
-        - 'edit': Updates content and marks as APPROVED.
+        - 'edit': Updates content, marks as APPROVED and APPROVED_DECISION.
         """
         items = self._read_staging_json()
         match_idx = next((i for i, it in enumerate(items) if it.get("memory_id") == memory_id), None)
@@ -282,32 +344,39 @@ class CollaborativeMemoryManager:
             raise KeyError(f"Memory with ID '{memory_id}' not found in staging store.")
 
         item = items[match_idx]
-        now_iso = datetime.now(timezone.utc).isoformat()
+        now_iso = datetime.now().astimezone().isoformat()
         act = action.lower()
 
         if act == "approve":
             item["status"] = ApprovalStatus.APPROVED.value
+            item["category"] = MemoryCategory.APPROVED_DECISION.value
             item["is_active_recommendation"] = True
             item["reviewed_at"] = now_iso
             item["reviewed_by"] = reviewer
-            item["authorization_record"] = f"manual_review_by_{reviewer}:APPROVED"
+            item["authorization_record"] = f"mem_approval_{memory_id}:APPROVED_BY_{reviewer.upper()}"
+            item["authorization_scope"] = AuthorizationScope.MEMORY_APPROVAL.value
+            item["approved_text"] = item["content"]
 
         elif act == "reject":
             item["status"] = ApprovalStatus.REJECTED.value
             item["is_active_recommendation"] = False
             item["reviewed_at"] = now_iso
             item["reviewed_by"] = reviewer
-            item["authorization_record"] = f"manual_review_by_{reviewer}:REJECTED"
+            item["authorization_record"] = f"mem_approval_{memory_id}:REJECTED_BY_{reviewer.upper()}"
+            item["authorization_scope"] = AuthorizationScope.MEMORY_APPROVAL.value
 
         elif act == "edit":
             if not edited_content or not edited_content.strip():
                 raise ValueError("Edited content cannot be empty.")
             item["content"] = edited_content.strip()
+            item["approved_text"] = edited_content.strip()
             item["status"] = ApprovalStatus.APPROVED.value
+            item["category"] = MemoryCategory.APPROVED_DECISION.value
             item["is_active_recommendation"] = True
             item["reviewed_at"] = now_iso
             item["reviewed_by"] = reviewer
-            item["authorization_record"] = f"manual_review_edited_by_{reviewer}:APPROVED"
+            item["authorization_record"] = f"mem_approval_edited_{memory_id}:APPROVED_BY_{reviewer.upper()}"
+            item["authorization_scope"] = AuthorizationScope.MEMORY_APPROVAL.value
 
         else:
             raise ValueError(f"Unknown review action '{action}'. Must be 'approve', 'reject', or 'edit'.")
@@ -329,11 +398,13 @@ class CollaborativeMemoryManager:
         limit: int = 3,
         active_only: bool = True,
         category: Optional[str] = None,
+        include_synthetic: bool = False,
     ) -> List[Dict[str, Any]]:
         """
         Retrieves collaborative memories.
-        If active_only=True: strictly excludes REJECTED, SUPERSEDED, and PENDING_REVIEW memories.
-        If active_only=False: queries all memories including historical rejections.
+        If active_only=True: strictly excludes REJECTED, SUPERSEDED, PENDING_REVIEW, and QUARANTINED memories.
+        If include_synthetic=False (default): strictly excludes synthetic test memories from trusted recall.
+        If active_only=False: queries all memories including historical rejections and quarantined records.
         """
         items = self._read_staging_json()
         if not items:
@@ -342,8 +413,21 @@ class CollaborativeMemoryManager:
         # Filter candidate items
         filtered = []
         for it in items:
-            if active_only and not it.get("is_active_recommendation", False):
-                continue
+            if active_only:
+                if not it.get("is_active_recommendation", False):
+                    continue
+                if it.get("status") in [
+                    ApprovalStatus.PENDING_REVIEW.value,
+                    ApprovalStatus.REJECTED.value,
+                    ApprovalStatus.SUPERSEDED.value,
+                    ApprovalStatus.QUARANTINED.value,
+                ]:
+                    continue
+                if it.get("category") == MemoryCategory.HISTORICAL_TEST.value:
+                    continue
+                # Requirement 6: Never allow synthetic test memories into Genesis's ordinary trusted-memory retrieval
+                if it.get("is_synthetic", False) and not include_synthetic:
+                    continue
             if category and it.get("category") != category:
                 continue
             filtered.append(it)
@@ -358,6 +442,8 @@ class CollaborativeMemoryManager:
                 where_filter = {}
                 if active_only:
                     where_filter["is_active_recommendation"] = True
+                    if not include_synthetic:
+                        where_filter["is_synthetic"] = False
                 if category:
                     where_filter["category"] = category
 
@@ -390,6 +476,24 @@ class CollaborativeMemoryManager:
 
         # Recency fallback
         return filtered[-limit:]
+
+    def recall_test_memories(
+        self,
+        query: str = "",
+        limit: int = 5,
+        category: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Isolated test-only retrieval path (Requirement 7):
+        Retrieves approved synthetic test memories without contaminating ordinary trusted knowledge.
+        """
+        return self.recall_memories(
+            query=query,
+            limit=limit,
+            active_only=True,
+            category=category,
+            include_synthetic=True,
+        )
 
     # -------------------------------------------------------------------------
     # Reversible Operations: Backups & Consistency Reconciliation
@@ -485,6 +589,8 @@ class CollaborativeMemoryManager:
             "category": prov.category,
             "status": prov.status,
             "timestamp": prov.timestamp,
+            "is_synthetic": bool(prov.is_synthetic),
+            "authorization_scope": prov.authorization_scope or "",
             "is_active_recommendation": bool(prov.is_active_recommendation),
             "promoted_to_long_term": bool(prov.promoted_to_long_term),
         }
