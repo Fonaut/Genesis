@@ -33,6 +33,10 @@ class TestCommunicationInterface(unittest.TestCase):
     def setUp(self):
         self.test_log_dir = Path(tempfile.mkdtemp(prefix="test_interface_logs_"))
         # Point engine log dir to temporary folder
+        self.orig_log_dir = engine.log_dir
+        self.orig_convs_file = engine.conversations_file
+        self.orig_ledger_file = engine.cost_ledger_file
+
         engine.log_dir = self.test_log_dir
         engine.conversations_file = self.test_log_dir / "conversations.json"
         engine.cost_ledger_file = self.test_log_dir / "cost_ledger.json"
@@ -47,6 +51,13 @@ class TestCommunicationInterface(unittest.TestCase):
         self.original_staging_file = engine.collaborative_manager.staging_file
         engine.collaborative_manager.staging_file = self.test_log_dir / "collaborative_staging.json"
 
+        # Isolate group sessions store to test directory
+        self.orig_sessions_dir = engine.group_session_manager.sessions_dir
+        self.orig_active_group_id = engine.group_session_manager.active_session_id
+        engine.group_session_manager.sessions_dir = self.test_log_dir / "group_sessions"
+        engine.group_session_manager.sessions_dir.mkdir(parents=True, exist_ok=True)
+        engine.group_session_manager.active_session_id = None
+
         # Ensure kill-switch file is absent
         stop_file = PROJECT_ROOT / ".hub_stopped"
         if stop_file.exists():
@@ -56,6 +67,11 @@ class TestCommunicationInterface(unittest.TestCase):
         engine._active_reservations = {}
         engine.governor.cumulative_cost_usd = self.original_cumulative_cost
         engine.collaborative_manager.staging_file = self.original_staging_file
+        engine.group_session_manager.sessions_dir = self.orig_sessions_dir
+        engine.group_session_manager.active_session_id = self.orig_active_group_id
+        engine.log_dir = self.orig_log_dir
+        engine.conversations_file = self.orig_convs_file
+        engine.cost_ledger_file = self.orig_ledger_file
         stop_file = PROJECT_ROOT / ".hub_stopped"
         if stop_file.exists():
             stop_file.unlink()
@@ -724,6 +740,7 @@ class TestCommunicationInterface(unittest.TestCase):
 
     def test_journal_endpoints_active(self):
         """Verify Development Journal status and report endpoints return active session data."""
+        self.client.post("/api/journal/action", json={"action": "start", "activity": "Genesis Development", "milestone": "Testing"})
         res = self.client.get("/api/journal/status")
         self.assertEqual(res.status_code, 200)
         data = res.json()
@@ -732,6 +749,7 @@ class TestCommunicationInterface(unittest.TestCase):
 
         res_rep = self.client.get("/api/journal/report")
         self.assertEqual(res_rep.status_code, 200)
+        self.client.post("/api/journal/action", json={"action": "stop", "summary": "Done"})
 
     def test_html_report_view_and_download_endpoints(self):
         """Verify /report and /api/report/download serve the generated HTML report file."""
@@ -745,6 +763,92 @@ class TestCommunicationInterface(unittest.TestCase):
         self.assertIn("text/html", res_dl.headers.get("content-type", ""))
         self.assertIn("attachment", res_dl.headers.get("content-disposition", ""))
         self.assertIn("Genesis_Triad_Investigation_and_Hardening_Report.html", res_dl.headers.get("content-disposition", ""))
+
+    # -------------------------------------------------------------------------
+    # Phase 2 Group Collaboration Session Creation & Regression Tests
+    # -------------------------------------------------------------------------
+
+    def test_group_session_create_endpoint_registered(self):
+        """Confirm POST /api/sessions/create is registered in the real FastAPI application."""
+        registered_post_routes = [
+            route.path for route in app.routes
+            if hasattr(route, "methods") and "POST" in route.methods
+        ]
+        self.assertIn(
+            "/api/sessions/create",
+            registered_post_routes,
+            "POST /api/sessions/create must be registered in app.routes"
+        )
+
+    def test_group_session_create_returns_waiting_for_human_zero_agent_turns_and_zero_cost(self):
+        """
+        Verify that a valid POST /api/sessions/create request returns a new persistent session
+        with status WAITING_FOR_HUMAN, zero agent turns, and zero new API cost.
+        """
+        payload = {
+            "title": "System Architecture & Memory",
+            "initial_prompt": None,
+            "is_live": False,
+            "max_turns": 10,
+        }
+        res = self.client.post("/api/sessions/create", json=payload)
+        self.assertEqual(res.status_code, 200, f"Expected 200 OK, got {res.status_code}: {res.text}")
+        data = res.json()
+
+        self.assertIn("session_id", data)
+        self.assertTrue(data["session_id"].startswith("group_"))
+        self.assertEqual(data["title"], "System Architecture & Memory")
+        self.assertEqual(data["status"], "WAITING_FOR_HUMAN")
+        self.assertEqual(data["max_turns"], 10)
+        self.assertEqual(data["cumulative_cost_usd"], 0.0)
+
+        # Zero agent turns
+        agent_turns = [t for t in data.get("turns", []) if t.get("speaker_type") == "AGENT"]
+        self.assertEqual(len(agent_turns), 0, "New session must have zero agent turns")
+        self.assertEqual(len(data.get("turns", [])), 0, "Session without initial prompt must have 0 total turns")
+
+        # Confirm session file exists on disk
+        sess_file = engine.group_session_manager._get_session_path(data["session_id"])
+        self.assertTrue(sess_file.exists(), f"Session file {sess_file} must exist on disk")
+
+        # Confirm active session endpoint reflects the new session
+        res_active = self.client.get("/api/sessions/active")
+        self.assertEqual(res_active.status_code, 200)
+        active_data = res_active.json()
+        self.assertEqual(active_data["status"], "ACTIVE")
+        self.assertEqual(active_data["session"]["session_id"], data["session_id"])
+        self.assertEqual(active_data["session"]["status"], "WAITING_FOR_HUMAN")
+
+    def test_group_session_create_with_opening_prompt_human_turn_only(self):
+        """
+        Verify that creating a session with an opening question from Fodoh registers Turn 0 as HUMAN,
+        with status WAITING_FOR_HUMAN, zero agent turns, and zero API cost.
+        """
+        payload = {
+            "title": "Three-Agent Collaboration",
+            "initial_prompt": "How should our three agents coordinate working memory?",
+            "is_live": False,
+            "max_turns": 8,
+        }
+        res = self.client.post("/api/sessions/create", json=payload)
+        self.assertEqual(res.status_code, 200)
+        data = res.json()
+
+        self.assertEqual(data["status"], "WAITING_FOR_HUMAN")
+        self.assertEqual(data["cumulative_cost_usd"], 0.0)
+
+        # Zero agent turns
+        agent_turns = [t for t in data["turns"] if t["speaker_type"] == "AGENT"]
+        self.assertEqual(len(agent_turns), 0, "Must have zero agent turns")
+
+        # Turn 0 is human only
+        self.assertEqual(len(data["turns"]), 1)
+        t0 = data["turns"][0]
+        self.assertEqual(t0["turn_index"], 0)
+        self.assertEqual(t0["speaker"], "Fodoh")
+        self.assertEqual(t0["speaker_type"], "HUMAN")
+        self.assertEqual(t0["cost_usd_est"], 0.0)
+        self.assertEqual(t0["content"], "How should our three agents coordinate working memory?")
 
 
 if __name__ == "__main__":

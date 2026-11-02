@@ -70,6 +70,60 @@
               <span class="tab-desc">Phase 1 structured round</span>
             </div>
           </button>
+          <button class="nav-tab" data-tab="group" id="tabGroupCollab">
+            <span class="tab-icon">👥</span>
+            <div class="tab-info">
+              <span class="tab-title">Group Collaboration</span>
+              <span class="tab-desc">Phase 2 multi-round steering</span>
+            </div>
+          </button>
+        </div>
+
+        <!-- Phase 2 Group Collaboration Steering Panel -->
+        <div class="sidebar-section" id="groupCollaborationSection" style="display:none;">
+          <div class="sidebar-heading">GROUP COLLABORATION</div>
+          <div class="governance-card" style="margin-bottom: 10px;">
+            <div class="gov-row">
+              <span>Session:</span>
+              <strong id="groupSessionTitle" style="font-size:0.8rem; color:#38bdf8;">None Active</strong>
+            </div>
+            <div class="gov-row">
+              <span>Status:</span>
+              <span class="gov-badge-verified" id="groupSessionStatus" style="font-size:0.72rem;">WAITING_FOR_HUMAN</span>
+            </div>
+            <div class="gov-row">
+              <span>Turn Progress:</span>
+              <span class="gov-val" id="groupTurnProgress">0 / 10</span>
+            </div>
+            <div class="gov-row">
+              <span>Group Cost:</span>
+              <span class="gov-val" id="groupCumulativeCost">$0.000000</span>
+            </div>
+          </div>
+
+          <!-- Staged Next Agent Turn -->
+          <div style="background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; margin-bottom: 10px;">
+            <div style="font-size: 0.75rem; font-weight: 700; color: #94a3b8; margin-bottom: 6px; text-transform: uppercase;">Next Agent Turn</div>
+            <label style="font-size: 0.72rem; color: #cbd5e1; display: block; margin-bottom: 4px;">Select Agent:</label>
+            <select id="groupNextAgentSelect" style="width: 100%; background: #0f172a; border: 1px solid #334155; color: #f8fafc; padding: 6px; border-radius: 6px; font-size: 0.8rem; margin-bottom: 8px;">
+              <option value="Antigravity">Antigravity (Technical Co-Architect)</option>
+              <option value="OpenAI-Agent">OpenAI-Agent (Analytical Challenger)</option>
+              <option value="Genesis">Genesis (Voice Companion & Orchestrator)</option>
+            </select>
+            <label style="font-size: 0.72rem; color: #cbd5e1; display: block; margin-bottom: 4px;">Optional Prompt Focus:</label>
+            <textarea id="groupPromptOverride" placeholder="Optional steering directive..." rows="2" style="width: 100%; background: #0f172a; border: 1px solid #334155; color: #f8fafc; padding: 6px; border-radius: 6px; font-size: 0.78rem; margin-bottom: 8px; resize: vertical;"></textarea>
+            <button class="btn btn-primary btn-sm" id="btnPrepareGroupTurn" style="width: 100%; padding: 6px; font-size: 0.8rem;">
+              <span>Stage Agent Turn</span>
+            </button>
+          </div>
+
+          <!-- Session Controls -->
+          <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 8px;">
+            <button class="btn btn-outline btn-sm" id="btnNewGroupSession" style="font-size: 0.75rem; padding: 5px;">➕ New Topic</button>
+            <button class="btn btn-outline btn-sm" id="btnTogglePauseGroup" style="font-size: 0.75rem; padding: 5px;">⏸️ Pause</button>
+            <button class="btn btn-outline btn-sm" id="btnTerminateGroup" style="font-size: 0.75rem; padding: 5px; color: #f87171;">⏹️ End Topic</button>
+            <button class="btn btn-outline btn-sm" id="btnExtractGroupMemories" style="font-size: 0.75rem; padding: 5px; color: #38bdf8;">🧠 Extract</button>
+          </div>
         </div>
 
         <div class="sidebar-section" id="individualAgentSelectSection">
@@ -164,6 +218,20 @@
         <div class="alert-banner danger" id="killSwitchBanner" style="display:none;">
           <span>🛑 <strong>EMERGENCY STOP ACTIVE:</strong> Outbound communication halted. No API calls permitted.</span>
           <button class="btn btn-sm btn-outline-light" id="btnResetKillSwitch">Reset Stop</button>
+        </div>
+
+        <!-- In-flight Crash Recovery Banner (Phase 2 UNKNOWN_OUTCOME) -->
+        <div class="alert-banner warning" id="groupRecoveryBanner" style="display:none; margin-bottom: 12px; background: rgba(245, 158, 11, 0.15); border: 1px solid rgba(245, 158, 11, 0.4); padding: 10px 14px; border-radius: 8px;">
+          <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+            <div>
+              <span style="font-weight:700; color:#fbbf24;">⚠️ IN-FLIGHT TURN INTERRUPTED:</span>
+              <span id="groupRecoveryMsg" style="font-size:0.82rem; color:#fde68a; margin-left: 6px;">Outcome uncertain. Previous turns are preserved.</span>
+            </div>
+            <div style="display:flex; gap:8px;">
+              <button class="btn btn-sm btn-primary" id="btnGroupRetryTurn" style="padding:4px 10px; font-size:0.75rem;">🔄 Retry Turn</button>
+              <button class="btn btn-sm btn-outline" id="btnGroupMarkAborted" style="padding:4px 10px; font-size:0.75rem;">⏹️ Mark Aborted</button>
+            </div>
+          </div>
         </div>
 
         <!-- Pending Approval Gate Modal / Banner -->

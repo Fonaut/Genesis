@@ -1,9 +1,10 @@
 // Genesis Communication Interface — Frontend Controller (Vanilla JS)
 document.addEventListener("DOMContentLoaded", () => {
   // State
-  let currentTab = "individual"; // "individual" | "triad"
+  let currentTab = "individual"; // "individual" | "triad" | "group"
   let isLiveMode = false;
   let activePendingGate = null;
+  let activeGroupSessionId = null;
   let journalActiveStartTime = null;
   let journalTimerInterval = null;
 
@@ -14,6 +15,24 @@ document.addEventListener("DOMContentLoaded", () => {
   const btnSend = document.getElementById("btnSend");
   const messagesContainer = document.getElementById("messagesContainer");
   const emptyState = document.getElementById("emptyState");
+
+  // Group Collaboration Elements (Phase 2)
+  const groupCollaborationSection = document.getElementById("groupCollaborationSection");
+  const groupSessionTitle = document.getElementById("groupSessionTitle");
+  const groupSessionStatus = document.getElementById("groupSessionStatus");
+  const groupTurnProgress = document.getElementById("groupTurnProgress");
+  const groupCumulativeCost = document.getElementById("groupCumulativeCost");
+  const groupNextAgentSelect = document.getElementById("groupNextAgentSelect");
+  const groupPromptOverride = document.getElementById("groupPromptOverride");
+  const btnPrepareGroupTurn = document.getElementById("btnPrepareGroupTurn");
+  const btnNewGroupSession = document.getElementById("btnNewGroupSession");
+  const btnTogglePauseGroup = document.getElementById("btnTogglePauseGroup");
+  const btnTerminateGroup = document.getElementById("btnTerminateGroup");
+  const btnExtractGroupMemories = document.getElementById("btnExtractGroupMemories");
+  const groupRecoveryBanner = document.getElementById("groupRecoveryBanner");
+  const groupRecoveryMsg = document.getElementById("groupRecoveryMsg");
+  const btnGroupRetryTurn = document.getElementById("btnGroupRetryTurn");
+  const btnGroupMarkAborted = document.getElementById("btnGroupMarkAborted");
 
   // Approval Gate Elements
   const approvalCard = document.getElementById("approvalCard");
@@ -69,15 +88,31 @@ document.addEventListener("DOMContentLoaded", () => {
       btn.classList.add("active");
       currentTab = btn.dataset.tab;
 
+      // Clear current message pane for tab separation
+      messagesContainer.querySelectorAll(".msg-card").forEach(el => el.remove());
+      renderedEventIds.clear();
+
       if (currentTab === "individual") {
         agentRadiosSection.style.display = "block";
+        if (groupCollaborationSection) groupCollaborationSection.style.display = "none";
         messageInput.placeholder = "Message Genesis, Antigravity, or OpenAI-Agent... (Press Cmd+Enter)";
         btnSend.querySelector("span:first-child").textContent = "Send";
-      } else {
+        if (emptyState) {
+          emptyState.style.display = "block";
+          emptyState.querySelector("p").textContent = "Select an agent to begin an individual chat, or initiate a supervised 3-agent triad round.";
+        }
+      } else if (currentTab === "triad") {
         agentRadiosSection.style.display = "none";
+        if (groupCollaborationSection) groupCollaborationSection.style.display = "none";
         messageInput.placeholder = "Enter initial probe to kick off the Supervised Triad round... (Press Cmd+Enter)";
         btnSend.querySelector("span:first-child").textContent = "Start Triad Round";
         checkTriadStatus();
+      } else if (currentTab === "group") {
+        agentRadiosSection.style.display = "none";
+        if (groupCollaborationSection) groupCollaborationSection.style.display = "block";
+        messageInput.placeholder = "Interject into group discussion as Fodoh ($0 cost, no model invocation)... (Press Cmd+Enter)";
+        btnSend.querySelector("span:first-child").textContent = "Interject as Fodoh";
+        checkGroupStatus();
       }
     });
   });
@@ -138,8 +173,9 @@ document.addEventListener("DOMContentLoaded", () => {
     }
     if (emptyState) emptyState.style.display = "none";
 
+    const isHuman = (sender === "Fodoh" || meta.is_human);
     const card = document.createElement("div");
-    card.className = `msg-card ${sender === "Fodoh" ? "user-msg" : "agent-msg"}`;
+    card.className = `msg-card ${isHuman ? "user-msg human-turn" : "agent-msg"}`;
     if (eventId) {
       card.setAttribute("data-event-id", eventId);
     }
@@ -152,19 +188,27 @@ document.addEventListener("DOMContentLoaded", () => {
 
     let badgeClass = "user";
     let icon = "👤";
-    if (sender === "Genesis") { badgeClass = "genesis"; icon = "🟣"; }
-    else if (sender === "Antigravity") { badgeClass = "antigravity"; icon = "🔵"; }
-    else if (sender === "OpenAI-Agent") { badgeClass = "openai"; icon = "🟢"; }
+    let speakerLabel = sender;
+    if (sender === "Genesis") { badgeClass = "genesis"; icon = "🟣"; speakerLabel = "Genesis (Agent)"; }
+    else if (sender === "Antigravity") { badgeClass = "antigravity"; icon = "🔵"; speakerLabel = "Antigravity (Agent)"; }
+    else if (sender === "OpenAI-Agent") { badgeClass = "openai"; icon = "🟢"; speakerLabel = "OpenAI-Agent (Agent)"; }
+    else if (isHuman) { speakerLabel = "Fodoh (Human)"; }
 
-    author.innerHTML = `<span class="badge-speaker ${badgeClass}">${icon} ${sender}</span>`;
+    author.innerHTML = `<span class="badge-speaker ${badgeClass}">${icon} ${speakerLabel}</span>`;
 
     const metaSpan = document.createElement("div");
     metaSpan.className = "msg-meta";
 
     const parts = [];
-    if (meta.model) parts.push(meta.model);
-    if (meta.latency_sec) parts.push(`${meta.latency_sec}s`);
-    if (meta.cost_usd_est !== undefined && meta.cost_usd_est > 0) parts.push(`$${meta.cost_usd_est.toFixed(6)}`);
+    if (meta.model && meta.model !== "human") parts.push(meta.model);
+    if (meta.latency_sec && meta.latency_sec > 0) parts.push(`${meta.latency_sec}s`);
+    if (meta.cost_usd_est !== undefined) {
+      if (meta.cost_usd_est > 0) {
+        parts.push(`$${meta.cost_usd_est.toFixed(6)}`);
+      } else if (isHuman) {
+        parts.push(`$0.00 (Human Directive)`);
+      }
+    }
     metaSpan.textContent = parts.join(" • ");
 
     header.appendChild(author);
@@ -219,7 +263,7 @@ document.addEventListener("DOMContentLoaded", () => {
       } finally {
         btnSend.disabled = false;
       }
-    } else {
+    } else if (currentTab === "triad") {
       // Triad Initiate
       appendMessage("Fodoh", `Initiating Supervised Triad Round:\n${text}`);
       messageInput.value = "";
@@ -240,6 +284,38 @@ document.addEventListener("DOMContentLoaded", () => {
           return;
         }
         renderTriadState(data);
+      } catch (err) {
+        alert(`Network Error: ${err.message}`);
+      } finally {
+        btnSend.disabled = false;
+      }
+    } else if (currentTab === "group") {
+      // Direct Human Interjection ($0 cost, 0 API model requests)
+      if (!activeGroupSessionId) {
+        alert("No active collaborative topic. Click '➕ New Topic' to begin.");
+        return;
+      }
+      appendMessage("Fodoh", text, { model: "human", cost_usd_est: 0.0, is_human: true });
+      messageInput.value = "";
+      btnSend.disabled = true;
+
+      try {
+        const res = await fetch("/api/sessions/human/interject", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            message: text,
+            recommended_next_speaker: groupNextAgentSelect ? groupNextAgentSelect.value : null,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Interjection Error: ${data.detail || "Failed to post message"}`);
+          return;
+        }
+        renderGroupSessionState(data);
+        updateSystemStatus();
       } catch (err) {
         alert(`Network Error: ${err.message}`);
       } finally {
@@ -280,21 +356,43 @@ document.addEventListener("DOMContentLoaded", () => {
     btnRejectGate.disabled = true;
 
     try {
-      const res = await fetch("/api/chat/triad/respond-gate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          approval_id: activePendingGate.approval_id,
-          action: action,
-          edited_payload: payload,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) {
-        alert(`Approval Error: ${data.detail || "Failed to process approval"}`);
-        return;
+      if (activePendingGate.is_group) {
+        const res = await fetch("/api/sessions/turn/dispatch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activePendingGate.session_id,
+            gate_nonce: activePendingGate.gate_nonce,
+            action: action,
+            edited_payload: payload,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Turn Dispatch Error: ${data.detail || "Failed to process turn"}`);
+          return;
+        }
+        approvalCard.style.display = "none";
+        activePendingGate = null;
+        renderGroupSessionState(data);
+        updateSystemStatus();
+      } else {
+        const res = await fetch("/api/chat/triad/respond-gate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            approval_id: activePendingGate.approval_id,
+            action: action,
+            edited_payload: payload,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Approval Error: ${data.detail || "Failed to process approval"}`);
+          return;
+        }
+        renderTriadState(data);
       }
-      renderTriadState(data);
     } catch (err) {
       alert(`Network Error: ${err.message}`);
     } finally {
@@ -372,6 +470,316 @@ document.addEventListener("DOMContentLoaded", () => {
         renderTriadState(data);
       }
     } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // 5b. Phase 2 Group Collaboration Controls
+  // ---------------------------------------------------------------------------
+  if (btnPrepareGroupTurn) {
+    btnPrepareGroupTurn.addEventListener("click", async () => {
+      if (!activeGroupSessionId) {
+        alert("No active collaborative topic. Click '➕ New Topic' first.");
+        return;
+      }
+      const targetAgent = groupNextAgentSelect.value;
+      const promptOverride = (groupPromptOverride.value || "").trim();
+      btnPrepareGroupTurn.disabled = true;
+
+      try {
+        const res = await fetch("/api/sessions/turn/prepare", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            target_agent: targetAgent,
+            prompt_override: promptOverride || null,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Error: ${data.detail || "Failed to stage agent turn"}`);
+          return;
+        }
+        activePendingGate = {
+          is_group: true,
+          session_id: activeGroupSessionId,
+          gate_nonce: data.gate.gate_nonce,
+          target_agent: data.gate.target_agent,
+        };
+        approvalActionName.textContent = `Dispatch Agent Turn (${data.gate.target_agent})`;
+        approvalRecipient.textContent = `[${data.gate.target_agent}]`;
+        approvalPayloadEdit.value = data.gate.proposed_payload;
+        approvalCard.style.display = "block";
+        approvalCard.scrollIntoView({ behavior: "smooth" });
+        renderGroupSessionState(data.session);
+      } catch (err) {
+        alert(`Network Error: ${err.message}`);
+      } finally {
+        btnPrepareGroupTurn.disabled = false;
+      }
+    });
+  }
+
+  if (btnNewGroupSession) {
+    btnNewGroupSession.addEventListener("click", async () => {
+      const title = prompt("Enter collaborative topic title:", "System Architecture & Memory");
+      if (!title || !title.trim()) return;
+      const initialPrompt = prompt("Optional opening question from Fodoh:", "How should our three agents coordinate working memory?");
+      try {
+        const res = await fetch("/api/sessions/create", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: title.trim(),
+            initial_prompt: (initialPrompt || "").trim() || null,
+            is_live: isLiveMode,
+            max_turns: 10,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Error: ${data.detail || "Failed to create session"}`);
+          return;
+        }
+        activeGroupSessionId = data.session_id;
+        messagesContainer.querySelectorAll(".msg-card").forEach(el => el.remove());
+        renderedEventIds.clear();
+        renderGroupSessionState(data);
+        updateSystemStatus();
+      } catch (err) {
+        alert(`Network Error: ${err.message}`);
+      }
+    });
+  }
+
+  if (btnTogglePauseGroup) {
+    btnTogglePauseGroup.addEventListener("click", async () => {
+      if (!activeGroupSessionId) return;
+      const isPaused = groupSessionStatus.textContent === "PAUSED";
+      const action = isPaused ? "resume" : "pause";
+      try {
+        const res = await fetch("/api/sessions/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            action: action,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Error: ${data.detail || "Failed to toggle pause"}`);
+          return;
+        }
+        renderGroupSessionState(data);
+      } catch (err) {
+        alert(`Network Error: ${err.message}`);
+      }
+    });
+  }
+
+  if (btnTerminateGroup) {
+    btnTerminateGroup.addEventListener("click", async () => {
+      if (!activeGroupSessionId) return;
+      if (!confirm("Are you sure you want to end this collaborative topic?")) return;
+      try {
+        const res = await fetch("/api/sessions/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            action: "terminate",
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Error: ${data.detail || "Failed to end session"}`);
+          return;
+        }
+        renderGroupSessionState(data);
+      } catch (err) {
+        alert(`Network Error: ${err.message}`);
+      }
+    });
+  }
+
+  if (btnExtractGroupMemories) {
+    btnExtractGroupMemories.addEventListener("click", async () => {
+      if (!activeGroupSessionId) {
+        alert("No active session to extract memories from.");
+        return;
+      }
+      btnExtractGroupMemories.disabled = true;
+      btnExtractGroupMemories.textContent = "Extracting...";
+      try {
+        const res = await fetch("/api/sessions/extract-memories", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            extraction_method: "deterministic_offline",
+            stage_in_review_queue: true,
+          }),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          alert(`Extraction Error: ${data.detail || "Failed to extract memories"}`);
+          return;
+        }
+        alert(
+          `🧠 Memory Extraction Complete!\n\n` +
+          `• Extracted Candidates: ${data.extracted_count}\n` +
+          `• Newly Staged for Review: ${data.staged_count}\n` +
+          `• Skipped Duplicates: ${data.skipped_duplicates_count}\n` +
+          `• Extraction Logic: ${data.extraction_method}\n\n` +
+          `Open the Review Queue to inspect, edit, approve, or reject candidate memories.`
+        );
+        updateSystemStatus();
+      } catch (err) {
+        alert(`Network Error: ${err.message}`);
+      } finally {
+        btnExtractGroupMemories.disabled = false;
+        btnExtractGroupMemories.textContent = "🧠 Extract";
+      }
+    });
+  }
+
+  if (btnGroupRetryTurn) {
+    btnGroupRetryTurn.addEventListener("click", async () => {
+      if (!activeGroupSessionId) return;
+      try {
+        const res = await fetch("/api/sessions/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            action: "recover_turn",
+            recovery_action: "retry",
+          }),
+        });
+        const data = await res.json();
+        if (groupRecoveryBanner) groupRecoveryBanner.style.display = "none";
+        renderGroupSessionState(data);
+      } catch (err) {
+        alert(`Recovery Error: ${err.message}`);
+      }
+    });
+  }
+
+  if (btnGroupMarkAborted) {
+    btnGroupMarkAborted.addEventListener("click", async () => {
+      if (!activeGroupSessionId) return;
+      try {
+        const res = await fetch("/api/sessions/action", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            session_id: activeGroupSessionId,
+            action: "recover_turn",
+            recovery_action: "mark_aborted",
+          }),
+        });
+        const data = await res.json();
+        if (groupRecoveryBanner) groupRecoveryBanner.style.display = "none";
+        renderGroupSessionState(data);
+      } catch (err) {
+        alert(`Recovery Error: ${err.message}`);
+      }
+    });
+  }
+
+  function renderGroupSessionState(session) {
+    if (!session) return;
+    activeGroupSessionId = session.session_id;
+    if (groupSessionTitle) groupSessionTitle.textContent = session.title || "Collaborative Session";
+    if (groupSessionStatus) {
+      groupSessionStatus.textContent = session.status;
+      if (session.status === "WAITING_FOR_HUMAN") {
+        groupSessionStatus.className = "gov-badge-verified";
+      } else if (session.status === "DISPATCH_PENDING" || session.status === "UNKNOWN_OUTCOME") {
+        groupSessionStatus.className = "gov-badge-warning";
+      } else if (session.status === "EXECUTING_TURN") {
+        groupSessionStatus.className = "gov-badge-info";
+      } else {
+        groupSessionStatus.className = "gov-badge-neutral";
+      }
+    }
+    if (groupTurnProgress) groupTurnProgress.textContent = `${session.turns ? session.turns.length : 0} / ${session.max_turns || 10}`;
+    if (groupCumulativeCost) groupCumulativeCost.textContent = `$${(session.cumulative_cost_usd || 0).toFixed(6)}`;
+    if (btnTogglePauseGroup) btnTogglePauseGroup.textContent = session.status === "PAUSED" ? "▶️ Resume" : "⏸️ Pause";
+
+    if (session.recommended_next_speaker && groupNextAgentSelect) {
+      groupNextAgentSelect.value = session.recommended_next_speaker;
+    }
+
+    if (groupRecoveryBanner) {
+      if (session.status === "UNKNOWN_OUTCOME") {
+        groupRecoveryBanner.style.display = "block";
+        if (groupRecoveryMsg) groupRecoveryMsg.textContent = session.error_message || "Turn outcome uncertain. Previous turns preserved.";
+      } else {
+        groupRecoveryBanner.style.display = "none";
+      }
+    }
+
+    if (session.status === "DISPATCH_PENDING" && session.active_gate) {
+      activePendingGate = {
+        is_group: true,
+        session_id: session.session_id,
+        gate_nonce: session.active_gate.gate_nonce,
+        target_agent: session.active_gate.target_agent,
+      };
+      approvalActionName.textContent = `Dispatch Agent Turn (${session.active_gate.target_agent})`;
+      approvalRecipient.textContent = `[${session.active_gate.target_agent}]`;
+      approvalPayloadEdit.value = session.active_gate.proposed_payload;
+      approvalCard.style.display = "block";
+      approvalCard.scrollIntoView({ behavior: "smooth" });
+    } else if (activePendingGate && activePendingGate.is_group) {
+      approvalCard.style.display = "none";
+      activePendingGate = null;
+    }
+
+    // Render turns in messages container when in group tab
+    if (currentTab === "group" && session.turns && session.turns.length > 0) {
+      if (emptyState) emptyState.style.display = "none";
+      session.turns.forEach(turn => {
+        const turnEventId = `group_${session.session_id}_turn_${turn.turn_id}`;
+        appendMessage(
+          turn.speaker,
+          turn.content,
+          {
+            model: turn.model,
+            latency_sec: turn.latency_sec,
+            cost_usd_est: turn.cost_usd_est,
+            is_human: turn.speaker_type === "HUMAN",
+          },
+          turnEventId
+        );
+      });
+    }
+  }
+
+  async function checkGroupStatus() {
+    try {
+      const res = await fetch("/api/sessions/active");
+      if (!res.ok) return;
+      const data = await res.json();
+      if (data.status === "ACTIVE" && data.session) {
+        renderGroupSessionState(data.session);
+      } else {
+        if (groupSessionTitle) groupSessionTitle.textContent = "None Active";
+        if (groupSessionStatus) groupSessionStatus.textContent = "WAITING_FOR_HUMAN";
+        if (groupTurnProgress) groupTurnProgress.textContent = "0 / 10";
+        if (groupCumulativeCost) groupCumulativeCost.textContent = "$0.000000";
+        if (currentTab === "group" && messagesContainer.querySelectorAll(".msg-card").length === 0) {
+          if (emptyState) {
+            emptyState.style.display = "block";
+            emptyState.querySelector("p").textContent = "No active collaborative topic. Click '➕ New Topic' to begin.";
+          }
+        }
+      }
+    } catch (e) {
+      console.error("Failed to check group session status:", e);
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -575,6 +983,14 @@ document.addEventListener("DOMContentLoaded", () => {
         const totalEl = document.getElementById("totalStagedMemoriesVal");
         if (totalEl) totalEl.textContent = data.total_collaborative_memories;
       }
+
+      // 6. Active Group Session Tracking (Phase 2)
+      if (data.active_group_session) {
+        activeGroupSessionId = data.active_group_session.session_id;
+        if (currentTab === "group") {
+          renderGroupSessionState(data.active_group_session);
+        }
+      }
     } catch (e) {
       console.error("Failed to update system status:", e);
     }
@@ -635,8 +1051,9 @@ document.addEventListener("DOMContentLoaded", () => {
         const cardBorderLeft = isSynthetic ? "4px solid #eab308" : "4px solid #38bdf8";
 
         // 1. Provenance Banner
-        const synthBanner = isSynthetic
-          ? `
+        let synthBanner = "";
+        if (isSynthetic) {
+          synthBanner = `
             <div style="background: rgba(234, 179, 8, 0.18); border: 2px solid #eab308; border-radius: 8px; padding: 10px 14px; margin-bottom: 12px;">
               <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span style="color:#fbbf24; font-size:0.85rem; font-weight:800; letter-spacing:0.5px;">
@@ -646,15 +1063,24 @@ document.addEventListener("DOMContentLoaded", () => {
                   Test Isolation Active
                 </span>
               </div>
-              <p style="color:#fef08a; font-size:0.75rem; margin:6px 0 0 0; line-height:1.4;">
-                ⚠️ Generated during an offline supervised triad test scenario. Decoupled from Genesis's personal identity and companion memories. Isolated strictly from ordinary trusted knowledge recall.
+              <p style="color:#fef08a; font-size:0.75rem; margin:6px 0 0 0; line-line:1.4;">
+                ⚠️ Generated during an offline test scenario. Decoupled from Genesis's personal identity and companion memories. Isolated strictly from ordinary trusted knowledge recall.
               </p>
             </div>
-          ` : `
+          `;
+        } else if (m.speaker === "Fodoh") {
+          synthBanner = `
+            <div style="background: rgba(16, 185, 129, 0.12); border: 1px solid #10b981; border-radius: 6px; padding: 6px 12px; margin-bottom: 12px; font-size: 0.75rem; color: #34d399; font-weight:700;">
+              👤 PROVENANCE: AUTHENTIC HUMAN DIRECTIVE / INPUT (FODOH)
+            </div>
+          `;
+        } else {
+          synthBanner = `
             <div style="background: rgba(56, 189, 248, 0.08); border: 1px solid #0284c7; border-radius: 6px; padding: 6px 12px; margin-bottom: 12px; font-size: 0.75rem; color: #38bdf8; font-weight:600;">
               🌐 PROVENANCE: REAL MODEL CONVERSATION
             </div>
           `;
+        }
 
         // 2. Authorization Scope (Decoupled from Approval Status)
         const authRec = m.authorization_record || "None";
@@ -681,7 +1107,9 @@ document.addEventListener("DOMContentLoaded", () => {
                   ⚠️ TRANSIT APPROVAL ONLY — NOT A MEMORY APPROVAL
                 </div>
                 <div style="color:#fecaca; font-size:0.73rem; margin-top:2px; line-height:1.4;">
-                  The reference <code>${authRec}</code> records that Fodoh approved Gate 3 solely to <strong>forward an inter-agent turn</strong> during test execution. It granted transit permission only; it did <strong>NOT</strong> authorize permanent storage, architectural consensus, or memory promotion.
+                  ${m.speaker === "Fodoh" ? 
+                    `The reference <code>${authRec}</code> records that this message was authored by Fodoh directly for <strong>conversational transit</strong> within the session. Transit participation does <strong>NOT</strong> automatically authorize permanent storage as enduring long-term memory; explicit human approval is still required.` : 
+                    `The reference <code>${authRec}</code> records human approval solely to <strong>forward an inter-agent turn</strong> during execution. It granted transit permission only; it did <strong>NOT</strong> authorize permanent storage, architectural consensus, or memory promotion.`}
                 </div>
               </div>
               <div style="display:flex; justify-content:space-between; align-items:center; margin-top:8px; padding-top:6px; border-top:1px solid #334155; font-size:0.75rem;">
@@ -741,7 +1169,13 @@ document.addEventListener("DOMContentLoaded", () => {
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
               <div>
                 <span style="background:rgba(56,189,248,0.15); color:#38bdf8; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:700;">${m.category}</span>
-                ${isSynthetic ? `<span style="margin-left:6px; background:#eab308; color:#0f172a; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:800; letter-spacing:0.3px;">🧪 SYNTHETIC (OFFLINE)</span>` : `<span style="margin-left:6px; background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:700;">🌐 LIVE MODEL DIALOGUE</span>`}
+                ${isSynthetic ? 
+                  `<span style="margin-left:6px; background:#eab308; color:#0f172a; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:800; letter-spacing:0.3px;">🧪 SYNTHETIC (OFFLINE)</span>` : 
+                  (m.speaker === "Fodoh" ? 
+                    `<span style="margin-left:6px; background:rgba(16,185,129,0.2); color:#34d399; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:700;">👤 AUTHENTIC HUMAN</span>` : 
+                    `<span style="margin-left:6px; background:rgba(56,189,248,0.2); color:#38bdf8; padding:3px 8px; border-radius:4px; font-size:0.75rem; font-weight:700;">🌐 LIVE MODEL DIALOGUE</span>`
+                  )
+                }
                 <span style="margin-left:8px; font-size:0.8rem; color:#94a3b8;">Speaker: <strong>${m.speaker}</strong></span>
                 <span style="margin-left:8px; font-size:0.75rem; color:#64748b;" title="ISO: ${m.timestamp}">🕒 ${formatMemoryTimestamp(m.timestamp)}</span>
               </div>
@@ -908,4 +1342,5 @@ document.addEventListener("DOMContentLoaded", () => {
   setInterval(pollJournalStatus, 2000);
   setInterval(updateSystemStatus, 3000);
   setInterval(checkTriadStatus, 3000);
+  setInterval(checkGroupStatus, 3000);
 });

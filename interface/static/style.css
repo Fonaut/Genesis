@@ -473,6 +473,14 @@ input:checked + .slider:before { transform: translateX(16px); }
   width: 75%;
 }
 
+.msg-card.human-turn {
+  align-self: flex-end;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-left: 4px solid #10b981;
+  box-shadow: 0 2px 8px rgba(16, 185, 129, 0.08);
+}
+
 .msg-card.agent-msg {
   align-self: flex-start;
   width: 85%;

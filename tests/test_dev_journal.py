@@ -206,13 +206,10 @@ class TestDevelopmentJournal(unittest.TestCase):
         Total active: 9000s (2.5h)
         """
         # Pick local dates
-        now_local = datetime.now().astimezone()
-        tz = now_local.tzinfo
-
-        day1_start = datetime(2026, 10, 20, 23, 0, 0, tzinfo=tz)
-        break_start = datetime(2026, 10, 20, 23, 45, 0, tzinfo=tz)
-        break_end = datetime(2026, 10, 21, 0, 15, 0, tzinfo=tz)
-        day2_end = datetime(2026, 10, 21, 2, 0, 0, tzinfo=tz)
+        day1_start = datetime(2026, 11, 10, 23, 0, 0).astimezone()
+        break_start = datetime(2026, 11, 10, 23, 45, 0).astimezone()
+        break_end = datetime(2026, 11, 11, 0, 15, 0).astimezone()
+        day2_end = datetime(2026, 11, 11, 2, 0, 0).astimezone()
 
         self.manager.start_session(activity="Night Ops", start_dt=day1_start.astimezone(timezone.utc))
         self.manager.take_break(reason="Midnight Coffee", break_dt=break_start.astimezone(timezone.utc))
@@ -222,16 +219,16 @@ class TestDevelopmentJournal(unittest.TestCase):
         report = self.manager.get_report(reference_dt=day2_end.astimezone(timezone.utc))
 
         daily_hist = report["daily_history"]
-        self.assertIn("2026-10-20", daily_hist)
-        self.assertIn("2026-10-21", daily_hist)
+        self.assertIn("2026-11-10", daily_hist)
+        self.assertIn("2026-11-11", daily_hist)
 
         # 45 mins on Day 1
-        self.assertAlmostEqual(daily_hist["2026-10-20"]["active_work_sec"], 2700.0, delta=2.0)
-        self.assertAlmostEqual(daily_hist["2026-10-20"]["break_sec"], 900.0, delta=2.0)
+        self.assertAlmostEqual(daily_hist["2026-11-10"]["active_work_sec"], 2700.0, delta=2.0)
+        self.assertAlmostEqual(daily_hist["2026-11-10"]["break_sec"], 900.0, delta=2.0)
 
         # 105 mins on Day 2
-        self.assertAlmostEqual(daily_hist["2026-10-21"]["active_work_sec"], 6300.0, delta=2.0)
-        self.assertAlmostEqual(daily_hist["2026-10-21"]["break_sec"], 900.0, delta=2.0)
+        self.assertAlmostEqual(daily_hist["2026-11-11"]["active_work_sec"], 6300.0, delta=2.0)
+        self.assertAlmostEqual(daily_hist["2026-11-11"]["break_sec"], 900.0, delta=2.0)
 
         # Cumulative: 9000s active
         self.assertAlmostEqual(report["cumulative"]["total_active_work_sec"], 9000.0, delta=2.0)

@@ -29,6 +29,12 @@ from interface.models import (
     JournalActionRequest,
     MemoryReviewRequest,
     MemoryProposeRequest,
+    GroupSessionCreateRequest,
+    GroupTurnPrepareRequest,
+    GroupTurnDispatchRequest,
+    HumanInterjectRequest,
+    GroupSessionActionRequest,
+    GroupMemoryExtractionRequest,
 )
 from hub.phase0 import HubSafetyError, KillSwitchActiveError
 from hub.phase1 import CostLimitExceededError
@@ -50,6 +56,52 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def verify_request_origin(request: Request, call_next):
+    """
+    Enforces request-origin and CSRF protections for state-changing endpoints.
+    Blocks cross-origin requests, invalid Origin/Referer headers, and Sec-Fetch-Site cross-site requests.
+    """
+    if request.method in ("POST", "PUT", "DELETE", "PATCH"):
+        # 1. Sec-Fetch-Site check (W3C Fetch Metadata): reject cross-site requests
+        sec_fetch_site = request.headers.get("sec-fetch-site")
+        if sec_fetch_site and sec_fetch_site == "cross-site":
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Forbidden: Cross-site requests are rejected by CSRF protection."},
+            )
+
+        # 2. Origin check: if present, must match authorized local origins
+        origin = request.headers.get("origin")
+        allowed_origins = {
+            "http://127.0.0.1:8765",
+            "http://localhost:8765",
+            "http://testserver",
+            "testserver",
+        }
+        if origin and origin not in allowed_origins:
+            return JSONResponse(
+                status_code=403,
+                content={"detail": f"Forbidden: Request origin '{origin}' is not authorized."},
+            )
+
+        # 3. Referer check: fallback when origin is omitted by older browser requests
+        referer = request.headers.get("referer")
+        if referer and not origin:
+            ref_allowed = any(
+                referer.startswith(a)
+                for a in ("http://127.0.0.1:8765", "http://localhost:8765", "http://testserver")
+            )
+            if not ref_allowed:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": f"Forbidden: Request referer '{referer}' is not authorized."},
+                )
+
+    return await call_next(request)
+
 
 engine = CommunicationInterfaceEngine()
 
@@ -114,6 +166,9 @@ async def get_status():
     seatbelt_active = (sys.platform == "darwin" and (Path("/usr/bin/sandbox-exec").exists() or os.path.exists("/usr/bin/sandbox-exec")))
     sandbox_label = "Seatbelt Active" if seatbelt_active else "Filesystem Isolated"
 
+    active_group = engine.group_session_manager.get_active_session()
+    group_data = active_group.model_dump() if active_group else None
+
     return {
         "kill_switch_active": engine.is_kill_switch_active,
         "max_cost_usd": engine.max_cost_usd,
@@ -126,6 +181,7 @@ async def get_status():
         "pending_memory_reviews_count": len(engine.collaborative_manager.get_review_queue()),
         "total_collaborative_memories": len(engine.collaborative_manager._read_staging_json()),
         "active_triad_session": triad_data,
+        "active_group_session": group_data,
         "participants": [
             {"id": "Genesis", "name": "Genesis", "role": "Voice Companion & Orchestrator", "color": "purple"},
             {"id": "Antigravity", "name": "Antigravity", "role": "Technical Co-Architect & Execution Engine", "color": "blue"},
@@ -253,6 +309,135 @@ async def respond_triad_gate(req: TriadGateResponseRequest):
             "cumulative_cost_usd": round(state.cumulative_cost_usd, 6),
             "error_message": state.error_message,
         }
+    except (KillSwitchActiveError, HubSafetyError) as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+
+
+# -----------------------------------------------------------------------------
+# Phase 2: Flexible Multi-Round Group Collaboration
+# -----------------------------------------------------------------------------
+
+@app.post("/api/sessions/create")
+async def create_group_session(req: GroupSessionCreateRequest):
+    try:
+        sess = engine.group_session_manager.create_session(
+            title=req.title,
+            is_live=req.is_live,
+            max_turns=req.max_turns,
+            initial_prompt=req.initial_prompt,
+        )
+        return sess.model_dump()
+    except (KillSwitchActiveError, HubSafetyError) as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+
+
+@app.get("/api/sessions/active")
+async def get_active_group_session():
+    sess = engine.group_session_manager.get_active_session()
+    if not sess:
+        return {"status": "NONE", "session": None}
+    return {"status": "ACTIVE", "session": sess.model_dump()}
+
+
+@app.get("/api/sessions/{session_id}")
+async def get_group_session(session_id: str):
+    sess = engine.group_session_manager.get_session(session_id)
+    if not sess:
+        raise HTTPException(status_code=404, detail=f"Session '{session_id}' not found.")
+    return sess.model_dump()
+
+
+@app.get("/api/sessions")
+async def list_group_sessions():
+    return engine.group_session_manager.list_sessions()
+
+
+@app.post("/api/sessions/human/interject")
+async def interject_human_message(req: HumanInterjectRequest):
+    try:
+        sess = engine.group_session_manager.interject_human_message(
+            session_id=req.session_id,
+            message=req.message,
+            recommended_next_speaker=req.recommended_next_speaker,
+        )
+        return sess.model_dump()
+    except (KillSwitchActiveError, HubSafetyError) as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+
+
+@app.post("/api/sessions/turn/prepare")
+async def prepare_agent_turn(req: GroupTurnPrepareRequest):
+    try:
+        sess, gate = engine.group_session_manager.prepare_agent_turn(
+            session_id=req.session_id,
+            target_agent=req.target_agent,
+            prompt_override=req.prompt_override,
+        )
+        return {
+            "session": sess.model_dump(),
+            "gate": gate,
+        }
+    except (KillSwitchActiveError, HubSafetyError) as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+
+
+@app.post("/api/sessions/turn/dispatch")
+async def dispatch_agent_turn(req: GroupTurnDispatchRequest):
+    try:
+        sess = engine.group_session_manager.dispatch_agent_turn(
+            session_id=req.session_id,
+            gate_nonce=req.gate_nonce,
+            action=req.action,
+            edited_payload=req.edited_payload,
+        )
+        return sess.model_dump()
+    except (KillSwitchActiveError, HubSafetyError, CostLimitExceededError) as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+    except Exception as err:
+        raise HTTPException(status_code=500, detail=f"Turn execution error: {str(err)}")
+
+
+@app.post("/api/sessions/action")
+async def handle_session_action(req: GroupSessionActionRequest):
+    act = req.action.lower()
+    try:
+        if act == "pause":
+            sess = engine.group_session_manager.pause_session(req.session_id)
+        elif act == "resume":
+            sess = engine.group_session_manager.resume_session(req.session_id)
+        elif act == "terminate":
+            sess = engine.group_session_manager.terminate_session(req.session_id)
+        elif act == "recover_turn":
+            sess = engine.group_session_manager.recover_turn_action(
+                req.session_id, action=req.recovery_action or "mark_aborted"
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown session action '{req.action}'.")
+        return sess.model_dump()
+    except (KillSwitchActiveError, HubSafetyError) as err:
+        raise HTTPException(status_code=400, detail=str(err))
+    except ValueError as err:
+        raise HTTPException(status_code=422, detail=str(err))
+
+
+@app.post("/api/sessions/extract-memories")
+async def extract_group_session_memories(req: GroupMemoryExtractionRequest):
+    try:
+        result = engine.group_session_manager.extract_memories(
+            session_id=req.session_id,
+            stage_in_review_queue=req.stage_in_review_queue,
+        )
+        return result
     except (KillSwitchActiveError, HubSafetyError) as err:
         raise HTTPException(status_code=400, detail=str(err))
     except ValueError as err:

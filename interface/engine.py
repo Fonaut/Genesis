@@ -85,7 +85,13 @@ class CommunicationInterfaceEngine:
         self.governor = SafetyGovernor(max_turns=20, max_cost_usd=max_cost_usd)
         self.journal_manager = DevelopmentJournalManager()
         self.sandbox = SandboxManager()
-        self.collaborative_manager = CollaborativeMemoryManager()
+        staging_override = (self.log_dir / "collaborative_staging.json") if log_dir else None
+        self.collaborative_manager = CollaborativeMemoryManager(staging_file=staging_override)
+
+        # Phase 2 Multi-Round Group Collaboration Session Manager
+        from interface.group_session import MultiRoundSessionManager
+        self.group_session_manager = MultiRoundSessionManager(log_dir=self.log_dir, engine=self)
+        self.group_session_manager.recover_sessions_on_startup()
 
         # Reconcile historical cumulative spending across all logs
         initial_reconciled_cost = self._reconcile_cumulative_costs()
@@ -305,6 +311,7 @@ class CommunicationInterfaceEngine:
 
     def _append_cost_ledger_entry(self, entry: Dict[str, Any]) -> None:
         """Appends a transaction entry to the persistent cost ledger."""
+        self.cost_ledger_file.parent.mkdir(parents=True, exist_ok=True)
         ledger = []
         if self.cost_ledger_file.exists():
             try:
